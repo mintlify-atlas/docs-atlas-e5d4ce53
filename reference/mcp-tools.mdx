@@ -1,0 +1,443 @@
+---
+title: "GBrain MCP tools: configure and use all 30 operations"
+description: "Reference for all 30 GBrain MCP tools — how to configure the server in Claude Code, Cursor, or any MCP client, and what each tool does."
+---
+
+GBrain exposes every brain operation as an MCP tool over stdio. The 30 tools are generated directly from the same `operations.ts` definitions that drive the CLI — there is no separate MCP layer to maintain. Start the server with `gbrain serve`.
+
+<Warning>
+  The 30 tools are not enough on their own. Your agent also needs the playbook: read the [GBRAIN_SKILLPACK.md](https://github.com/garrytan/gbrain/blob/main/docs/GBRAIN_SKILLPACK.md) and paste the relevant sections into your agent's system prompt or project instructions. The skillpack tells the agent *when* and *how* to use each tool — read before responding, write after learning, detect entities on every message, back-link everything. Tools without the skillpack give the agent a hammer with no guidance on what to build.
+</Warning>
+
+## Server configuration
+
+<Tabs>
+  <Tab title="Claude Code">
+    Add to `~/.claude/server.json`:
+
+    ```json
+    {
+      "mcpServers": {
+        "gbrain": {
+          "command": "gbrain",
+          "args": ["serve"]
+        }
+      }
+    }
+    ```
+  </Tab>
+  <Tab title="Cursor">
+    Add to Settings > MCP Servers:
+
+    ```json
+    {
+      "gbrain": {
+        "command": "gbrain",
+        "args": ["serve"]
+      }
+    }
+    ```
+  </Tab>
+  <Tab title="Generic MCP client">
+    Any MCP client that supports stdio transport:
+
+    ```json
+    {
+      "name": "gbrain",
+      "command": "gbrain",
+      "args": ["serve"],
+      "transport": "stdio"
+    }
+    ```
+  </Tab>
+</Tabs>
+
+## The 30 tools
+
+<AccordionGroup>
+  <Accordion title="Page CRUD">
+    ### `get_page`
+
+    Read a page by slug. Supports optional fuzzy matching via pg_trgm when the exact slug is unknown.
+
+    <ParamField body="slug" type="string" required>
+      Page slug, e.g. `people/pedro-franceschi`
+    </ParamField>
+    <ParamField body="fuzzy" type="boolean">
+      Enable fuzzy slug resolution. Returns `ambiguous_slug` error with candidates if multiple pages match. Default: `false`
+    </ParamField>
+
+    ---
+
+    ### `put_page`
+
+    Write or update a page. Accepts full markdown with YAML frontmatter. Automatically chunks, embeds, and reconciles tags. Creates a version snapshot.
+
+    <ParamField body="slug" type="string" required>
+      Page slug
+    </ParamField>
+    <ParamField body="content" type="string" required>
+      Full markdown content including YAML frontmatter
+    </ParamField>
+
+    ---
+
+    ### `delete_page`
+
+    Delete a page and all associated data (chunks, links, tags, timeline entries, versions).
+
+    <ParamField body="slug" type="string" required>
+      Page slug to delete
+    </ParamField>
+
+    ---
+
+    ### `list_pages`
+
+    List pages with optional filters. Returns slug, type, title, and updated_at for each page.
+
+    <ParamField body="type" type="string">
+      Filter by page type: `person`, `company`, `deal`, `yc`, `civic`, `project`, `concept`, `source`, `media`
+    </ParamField>
+    <ParamField body="tag" type="string">
+      Filter by tag
+    </ParamField>
+    <ParamField body="limit" type="number">
+      Maximum results. Default: `50`
+    </ParamField>
+  </Accordion>
+
+  <Accordion title="Search">
+    ### `search`
+
+    Keyword search using PostgreSQL full-text search (`tsvector` + `ts_rank`). Fast and precise for names and known phrases.
+
+    <ParamField body="query" type="string" required>
+      Search query
+    </ParamField>
+    <ParamField body="limit" type="number">
+      Maximum results. Default: `20`
+    </ParamField>
+
+    ---
+
+    ### `query`
+
+    Hybrid search combining vector search, keyword search, multi-query expansion (Claude Haiku), and RRF fusion. Best for semantic questions.
+
+    <ParamField body="query" type="string" required>
+      Natural language question or topic
+    </ParamField>
+    <ParamField body="limit" type="number">
+      Maximum results. Default: `20`
+    </ParamField>
+    <ParamField body="expand" type="boolean">
+      Enable multi-query expansion via Claude Haiku. Default: `true`
+    </ParamField>
+  </Accordion>
+
+  <Accordion title="Tags">
+    ### `add_tag`
+
+    Add a tag to a page.
+
+    <ParamField body="slug" type="string" required>
+      Page slug
+    </ParamField>
+    <ParamField body="tag" type="string" required>
+      Tag to add
+    </ParamField>
+
+    ---
+
+    ### `remove_tag`
+
+    Remove a tag from a page.
+
+    <ParamField body="slug" type="string" required>
+      Page slug
+    </ParamField>
+    <ParamField body="tag" type="string" required>
+      Tag to remove
+    </ParamField>
+
+    ---
+
+    ### `get_tags`
+
+    List all tags for a page.
+
+    <ParamField body="slug" type="string" required>
+      Page slug
+    </ParamField>
+  </Accordion>
+
+  <Accordion title="Links and graph">
+    ### `add_link`
+
+    Create a typed link between two pages.
+
+    <ParamField body="from" type="string" required>
+      Source page slug
+    </ParamField>
+    <ParamField body="to" type="string" required>
+      Target page slug
+    </ParamField>
+    <ParamField body="link_type" type="string">
+      Link type, e.g. `invested_in`, `works_at`, `founded`, `knows`, `references`
+    </ParamField>
+    <ParamField body="context" type="string">
+      Human-readable context for the link
+    </ParamField>
+
+    ---
+
+    ### `remove_link`
+
+    Remove a link between two pages.
+
+    <ParamField body="from" type="string" required>
+      Source page slug
+    </ParamField>
+    <ParamField body="to" type="string" required>
+      Target page slug
+    </ParamField>
+
+    ---
+
+    ### `get_links`
+
+    List outgoing links from a page.
+
+    <ParamField body="slug" type="string" required>
+      Page slug
+    </ParamField>
+
+    ---
+
+    ### `get_backlinks`
+
+    List incoming links to a page.
+
+    <ParamField body="slug" type="string" required>
+      Page slug
+    </ParamField>
+
+    ---
+
+    ### `traverse_graph`
+
+    Traverse the link graph from a page using a recursive CTE. Returns all reachable nodes within the depth limit.
+
+    <ParamField body="slug" type="string" required>
+      Starting page slug
+    </ParamField>
+    <ParamField body="depth" type="number">
+      Maximum traversal depth. Default: `5`
+    </ParamField>
+  </Accordion>
+
+  <Accordion title="Timeline">
+    ### `add_timeline_entry`
+
+    Append a timeline entry to a page. The timeline is append-only — entries are never edited, only added to.
+
+    <ParamField body="slug" type="string" required>
+      Page slug
+    </ParamField>
+    <ParamField body="date" type="string" required>
+      Date in `YYYY-MM-DD` format
+    </ParamField>
+    <ParamField body="summary" type="string" required>
+      One-line summary of the event
+    </ParamField>
+    <ParamField body="detail" type="string">
+      Extended markdown detail
+    </ParamField>
+    <ParamField body="source" type="string">
+      Source reference (e.g. meeting transcript, email thread)
+    </ParamField>
+
+    ---
+
+    ### `get_timeline`
+
+    Get timeline entries for a page, ordered by date.
+
+    <ParamField body="slug" type="string" required>
+      Page slug
+    </ParamField>
+  </Accordion>
+
+  <Accordion title="Admin">
+    ### `get_stats`
+
+    Brain statistics: page count, chunk count, embedded count, link count, tag count, timeline entry count, and pages broken down by type.
+
+    No parameters.
+
+    ---
+
+    ### `get_health`
+
+    Brain health dashboard: embedding coverage percentage, stale page count, orphan page count, dead link count, and missing embeddings count.
+
+    No parameters.
+
+    ---
+
+    ### `get_versions`
+
+    Page version history — snapshot list for a page's compiled truth.
+
+    <ParamField body="slug" type="string" required>
+      Page slug
+    </ParamField>
+
+    ---
+
+    ### `revert_version`
+
+    Revert a page to a previous version. Creates a new snapshot of the current state before reverting.
+
+    <ParamField body="slug" type="string" required>
+      Page slug
+    </ParamField>
+    <ParamField body="version_id" type="number" required>
+      Version ID from `get_versions`
+    </ParamField>
+  </Accordion>
+
+  <Accordion title="Sync">
+    ### `sync_brain`
+
+    Sync a git repo to the brain incrementally. Only processes files that changed since the last checkpoint.
+
+    <ParamField body="repo" type="string">
+      Path to git repo. Uses the configured default if omitted.
+    </ParamField>
+    <ParamField body="dry_run" type="boolean">
+      Preview changes without applying. Default: `false`
+    </ParamField>
+    <ParamField body="full" type="boolean">
+      Full re-sync, ignoring the checkpoint. Default: `false`
+    </ParamField>
+    <ParamField body="no_pull" type="boolean">
+      Skip `git pull` before syncing. Default: `false`
+    </ParamField>
+    <ParamField body="no_embed" type="boolean">
+      Skip embedding generation. Default: `false`
+    </ParamField>
+  </Accordion>
+
+  <Accordion title="Raw data">
+    ### `put_raw_data`
+
+    Store a raw API response as sidecar JSON for a page. Used by the enrichment pipeline to keep raw data separate from the compiled truth.
+
+    <ParamField body="slug" type="string" required>
+      Page slug
+    </ParamField>
+    <ParamField body="source" type="string" required>
+      Data source identifier, e.g. `crustdata`, `happenstance`, `linkedin`
+    </ParamField>
+    <ParamField body="data" type="object" required>
+      Raw data object to store
+    </ParamField>
+
+    ---
+
+    ### `get_raw_data`
+
+    Retrieve raw sidecar data for a page, optionally filtered by source.
+
+    <ParamField body="slug" type="string" required>
+      Page slug
+    </ParamField>
+    <ParamField body="source" type="string">
+      Filter by source identifier
+    </ParamField>
+  </Accordion>
+
+  <Accordion title="Resolution and chunks">
+    ### `resolve_slugs`
+
+    Fuzzy-resolve a partial slug to matching page slugs. Uses pg_trgm for approximate string matching.
+
+    <ParamField body="partial" type="string" required>
+      Partial slug to resolve, e.g. `pedro`
+    </ParamField>
+
+    ---
+
+    ### `get_chunks`
+
+    Get all content chunks for a page, including chunk text, source (`compiled_truth` or `timeline`), and token count.
+
+    <ParamField body="slug" type="string" required>
+      Page slug
+    </ParamField>
+  </Accordion>
+
+  <Accordion title="Ingest log">
+    ### `log_ingest`
+
+    Log an ingestion event to the audit trail.
+
+    <ParamField body="source_type" type="string" required>
+      Type of source, e.g. `meeting`, `email`, `note`
+    </ParamField>
+    <ParamField body="source_ref" type="string" required>
+      Reference to the source, e.g. file path or URL
+    </ParamField>
+    <ParamField body="pages_updated" type="array" required>
+      Array of page slugs that were updated
+    </ParamField>
+    <ParamField body="summary" type="string" required>
+      Human-readable summary of what was ingested
+    </ParamField>
+
+    ---
+
+    ### `get_ingest_log`
+
+    Get recent ingestion log entries.
+
+    <ParamField body="limit" type="number">
+      Maximum entries to return. Default: `20`
+    </ParamField>
+  </Accordion>
+
+  <Accordion title="Files">
+    ### `file_list`
+
+    List stored files. Optionally filter to files associated with a specific page.
+
+    <ParamField body="slug" type="string">
+      Filter by page slug. Returns all files if omitted (up to 100).
+    </ParamField>
+
+    ---
+
+    ### `file_upload`
+
+    Upload a local file to storage and register it in the `files` table. Associates the file with a page if `page_slug` is provided.
+
+    <ParamField body="path" type="string" required>
+      Local file path
+    </ParamField>
+    <ParamField body="page_slug" type="string">
+      Associate the file with this page slug
+    </ParamField>
+
+    ---
+
+    ### `file_url`
+
+    Get the storage URL for a file by its storage path.
+
+    <ParamField body="storage_path" type="string" required>
+      Storage path as returned by `file_list` or `file_upload`
+    </ParamField>
+  </Accordion>
+</AccordionGroup>

@@ -1,0 +1,145 @@
+---
+title: "Import a markdown directory into your GBrain brain"
+description: "Import a markdown directory into GBrain: file scanning, SHA-256 content hashing, chunking strategies, embedding, and idempotent Postgres upsert."
+---
+
+The import pipeline turns a directory of markdown files into a searchable knowledge brain. GBrain walks the directory, hashes each file, chunks the content, generates embeddings, and upserts everything into Postgres — skipping any file whose content hasn't changed since the last run.
+
+## How import works
+
+Each file passes through five stages:
+
+<Steps>
+  <Step title="File scanning">
+    GBrain recursively walks the directory, collecting all `.md` files. Hidden directories (starting with `.`) and `.raw/` sidecar directories are skipped automatically.
+  </Step>
+  <Step title="SHA-256 content hashing">
+    The parsed content — title, type, compiled truth, timeline, frontmatter, and tags — is hashed with SHA-256. If the existing page in Postgres has the same hash, the file is skipped without touching the database.
+  </Step>
+  <Step title="Chunking">
+    Changed content is split into chunks using one of three strategies (see below). Each chunk tracks its source (`compiled_truth` or `timeline`) and index.
+  </Step>
+  <Step title="Embedding">
+    Chunk texts are sent to OpenAI `text-embedding-3-large` in batches and the resulting 1536-dimension vectors are attached to each chunk. This step is skipped with `--no-embed`.
+  </Step>
+  <Step title="Postgres upsert">
+    A single transaction writes the page, reconciles tags, and upserts all chunks. If the page already existed, a version snapshot is saved first.
+  </Step>
+</Steps>
+
+## Basic import
+
+```bash
+gbrain import /path/to/brain/
+```
+
+GBrain prints a progress line every 100 files:
+
+```
+[gbrain import] 300/7000 (4%) | 45 files/sec | imported: 289 | skipped: 11 | errors: 0 | ETA: 148s
+```
+
+After import, verify with:
+
+```bash
+gbrain stats
+# Pages: 342, Chunks: 1,847, Embedded: 1,847, Links: 0
+```
+
+## Skip embedding for fast import
+
+Embedding is the slow step. If you want to get text search working immediately and backfill vectors later:
+
+```bash
+gbrain import /path/to/brain/ --no-embed
+gbrain embed --stale  # backfill embeddings later
+```
+
+<Tip>
+  Text import of 7,000 files takes roughly 30 seconds. Embedding the same corpus takes 10–15 minutes and costs approximately $4–5 via OpenAI `text-embedding-3-large`.
+</Tip>
+
+## Idempotency
+
+Re-running import is always safe. GBrain compares the SHA-256 hash of every parsed page against what is stored in Postgres. Unchanged files produce a `skipped` result and never touch the database. Only files with different content are reimported.
+
+## Import checkpoints
+
+If import is interrupted, GBrain saves a checkpoint to `~/.gbrain/import-checkpoint.json` every 100 files. The next run resumes from where it left off, skipping already-processed files. To ignore the checkpoint and start fresh:
+
+```bash
+gbrain import /path/to/brain/ --fresh
+```
+
+## Chunking strategies
+
+GBrain uses three chunking strategies dispatched by content type:
+
+<CardGroup cols={1}>
+  <Card title="Recursive" icon="list">
+    **Used for:** bulk import, timeline content.
+
+    A 5-level delimiter hierarchy (paragraphs → lines → sentences → clauses → words) produces 300-word chunks with 50-word sentence-aware overlap. Fast, predictable, and lossless — every word ends up in a chunk.
+  </Card>
+  <Card title="Semantic" icon="brain">
+    **Used for:** compiled truth sections.
+
+    Each sentence is embedded, adjacent cosine similarities are computed, and Savitzky-Golay smoothing identifies topic boundaries. Falls back to recursive on failure. Produces the highest-quality chunks for intelligence assessments.
+  </Card>
+  <Card title="LLM-guided" icon="sparkles">
+    **Used for:** high-value content, on request.
+
+    Content is pre-split into 128-word candidates. Claude Haiku identifies topic shifts in sliding windows (3 retries per window). Most expensive, best results for complex documents.
+  </Card>
+</CardGroup>
+
+## Parallel import
+
+For large corpora, pass `--workers N` to use multiple database connections concurrently. Each worker gets its own connection pool of size 2:
+
+```bash
+gbrain import /path/to/brain/ --workers 4
+```
+
+<Note>
+  The default is 1 worker (sequential). Workers are network-bound, so you can safely go higher than your CPU count up to the pool cap of 8.
+</Note>
+
+## Files over 5MB
+
+Files larger than 5MB are skipped with a warning — they don't crash the import. You will see a line like:
+
+```
+Skipped large-file.md: File too large (6291456 bytes)
+```
+
+Binary attachments (images, PDFs, audio) should be managed with `gbrain files mirror` rather than imported as markdown. See [File storage and binary migration](/guides/file-storage).
+
+## Obsidian vault detection
+
+When GBrain scans your machine during discovery, it identifies Obsidian vaults and offers wikilink conversion:
+
+```
+=== GBrain Environment Discovery ===
+
+  ~/git/brain (2.3GB, 342 .md files, 87 binary files)
+    Type: Plain markdown (ready for import)
+
+  ~/Documents/obsidian-vault (180MB, 1,203 .md files, 0 binary files)
+    Type: Obsidian vault (wikilink conversion available)
+
+=== Discovery Complete ===
+```
+
+For Obsidian and other note-taking apps, see [Migrate existing notes to GBrain](/guides/migrating).
+
+## After import
+
+Once import completes, check brain health:
+
+```bash
+gbrain stats    # page count, chunk count, embed coverage
+gbrain health   # coverage, stale pages, orphans
+```
+
+To keep the brain current as your git repo changes, set up [incremental sync](/guides/sync).

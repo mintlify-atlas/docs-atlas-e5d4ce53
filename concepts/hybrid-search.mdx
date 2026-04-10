@@ -1,0 +1,180 @@
+---
+title: "How GBrain hybrid search works: the complete pipeline"
+description: "Vector (HNSW cosine) plus keyword (tsvector) fused with RRF, expanded by Claude Haiku, and deduplicated across four layers for diverse, ranked results."
+---
+
+GBrain uses a hybrid search pipeline that combines vector and keyword approaches, fuses their ranked lists with Reciprocal Rank Fusion, and applies multi-query expansion and four layers of deduplication before returning results. The pipeline is designed for knowledge bases where neither approach alone is sufficient — keyword search misses conceptual matches, and vector search misses exact phrases buried in dense text.
+
+## The pipeline
+
+```text
+Query: "when should you ignore conventional wisdom?"
+         |
+    Multi-query expansion (Claude Haiku)
+    → "contrarian thinking startups"
+    → "going against the crowd in business"
+         |
+    +----+----+
+    |         |
+  Vector    Keyword
+  (HNSW     (tsvector +
+  cosine)    ts_rank)
+    |         |
+    +----+----+
+         |
+    RRF Fusion: score = sum(1/(60 + rank))
+         |
+    4-Layer Dedup
+    1. Best chunk per page
+    2. Jaccard similarity > 0.85 dedup
+    3. Type diversity (60% cap)
+    4. Per-page chunk cap (max 2)
+         |
+    Stale alerts (compiled truth older than latest timeline)
+         |
+    Results
+```
+
+## Why hybrid
+
+Keyword search alone misses conceptual matches. The query "ignore conventional wisdom" will not find a page titled "The Bus Ticket Theory of Genius" even though Paul Graham's essay is precisely about following obsessive unconventional interests. The content matches semantically but shares no keywords.
+
+Vector search alone misses exact phrases when the embedding is diluted by surrounding context. A chunk that mentions a specific name or company once, surrounded by unrelated content, may not surface for a direct name query even though the name is there verbatim.
+
+RRF fusion gets both right: keyword search ranks the exact-match results first, vector search surfaces the conceptual matches, and the fusion combines both ranked lists fairly regardless of their underlying score scales.
+
+## RRF fusion
+
+Reciprocal Rank Fusion merges multiple ranked result lists into a single ranked output. Each result's fused score is the sum of `1 / (K + rank)` across every list it appears in, where K = 60.
+
+```typescript
+const RRF_K = 60;
+
+function rrfFusion(lists: SearchResult[][]): SearchResult[] {
+  const scores = new Map<string, { result: SearchResult; score: number }>();
+
+  for (const list of lists) {
+    for (let rank = 0; rank < list.length; rank++) {
+      const r = list[rank];
+      const key = `${r.slug}:${r.chunk_text.slice(0, 50)}`;
+      const existing = scores.get(key);
+      const rrfScore = 1 / (RRF_K + rank);
+
+      if (existing) {
+        existing.score += rrfScore;
+      } else {
+        scores.set(key, { result: r, score: rrfScore });
+      }
+    }
+  }
+
+  return Array.from(scores.values())
+    .sort((a, b) => b.score - a.score)
+    .map(({ result, score }) => ({ ...result, score }));
+}
+```
+
+A result that ranks first in the keyword list and third in the vector list scores higher than a result that ranks first in only one list. Results that appear in multiple lists from multi-query expansion accumulate scores across each appearance.
+
+## Multi-query expansion
+
+When `gbrain query` runs, Claude Haiku generates two alternative phrasings of the original query before the vector search executes. The original query plus both alternatives are embedded and searched in parallel, tripling the number of vector result lists that feed into RRF fusion.
+
+```typescript
+// expansion.ts — runs via tool_use to guarantee structured output
+const alternatives = await callHaikuForExpansion(query);
+const all = [query, ...alternatives]; // max 3 total
+```
+
+Expansion is skipped for queries under three words — short queries are usually exact lookups and don't benefit from rephrasing. Expansion failure is non-fatal; the pipeline falls back to the original query only.
+
+Keyword search always runs against the original query only, not the expanded variants. Expansion targets the vector side where semantic variation adds value.
+
+<Note>
+  Multi-query expansion requires an `ANTHROPIC_API_KEY`. Without it, `gbrain query` still runs full hybrid search — just without the expanded variants. `gbrain search` uses keyword-only search and has no API key requirements.
+</Note>
+
+## Vector search: HNSW with text-embedding-3-large
+
+The embedding model is OpenAI's `text-embedding-3-large`, which produces 1536-dimensional vectors. Every content chunk gets embedded at import time and stored in the `content_chunks` table.
+
+The vector index is HNSW (Hierarchical Navigable Small World) with cosine similarity, provided by pgvector:
+
+```sql
+-- From schema.sql
+CREATE INDEX content_chunks_embedding_idx
+  ON content_chunks USING hnsw (embedding vector_cosine_ops);
+```
+
+HNSW gives approximate nearest-neighbor search in O(log n) time with high recall. At 22,000 chunks (a ~7,500 page brain), a vector search completes in milliseconds.
+
+## Keyword search: tsvector with ts_rank
+
+Keyword search uses PostgreSQL's built-in full-text search. The `search_vector` column on the `pages` table is a `tsvector` maintained by a trigger that indexes `title`, `compiled_truth`, `timeline`, and individual timeline entries:
+
+```sql
+-- search_vector is trigger-maintained
+-- GIN index for fast keyword lookup
+CREATE INDEX pages_search_vector_idx ON pages USING gin(search_vector);
+```
+
+`gbrain search` runs keyword-only search and returns immediately — no API calls required. It's the right choice when you know what term you're looking for and want the fastest possible response.
+
+## 4-layer deduplication
+
+After RRF fusion, the result list passes through four deduplication layers in sequence:
+
+<Steps>
+  <Step title="Best chunk per page (layer 1)">
+    Keep only the highest-scoring chunk for each page slug. This prevents a single long page from dominating results with multiple chunks.
+  </Step>
+  <Step title="Text similarity dedup (layer 2)">
+    Remove chunks whose text is too similar to an already-kept result. Uses Jaccard similarity on word sets as a proxy for cosine similarity, with a threshold of 0.85. Catches near-duplicate content that survived layer 1.
+  </Step>
+  <Step title="Type diversity cap (layer 3)">
+    No single page type (`person`, `company`, `concept`, etc.) can exceed 60% of the result set. Prevents a brain heavy with one type from returning homogeneous results.
+  </Step>
+  <Step title="Per-page chunk cap (layer 4)">
+    Maximum 2 chunks per page in the final result set. Applied after the type cap as a final safety net for any page that produced multiple distinct chunks that survived earlier layers.
+  </Step>
+</Steps>
+
+```typescript
+// dedup.ts — constants from production implementation
+const COSINE_DEDUP_THRESHOLD = 0.85;
+const MAX_TYPE_RATIO = 0.6;       // 60% cap per type
+const MAX_PER_PAGE = 2;           // max chunks per page
+```
+
+## Stale alerts
+
+After deduplication, GBrain flags results where the `compiled_truth` was last updated before the most recent `timeline` entry. This tells the agent that new evidence has been added to the timeline but the synthesis hasn't been rewritten to incorporate it.
+
+A stale alert doesn't suppress the result — it's returned with a flag so the agent knows to treat the compiled truth as potentially outdated and should schedule a rewrite.
+
+## Two search commands
+
+GBrain exposes two search interfaces with different speed and cost tradeoffs:
+
+<Tabs>
+  <Tab title="gbrain search (keyword)">
+    ```bash
+    gbrain search "Pedro Franceschi"
+    ```
+    - Keyword-only via tsvector
+    - No API calls required
+    - Returns in milliseconds
+    - Best for: exact name lookups, known terms, when no API key is available
+  </Tab>
+  <Tab title="gbrain query (hybrid)">
+    ```bash
+    gbrain query "who should I invite to dinner who knows both Pedro and Diana?"
+    ```
+    - Full pipeline: vector + keyword + multi-query expansion + RRF + 4-layer dedup
+    - Requires OpenAI key (embeddings) and Anthropic key (expansion)
+    - Degrades gracefully if either key is missing
+    - Best for: conceptual questions, relationship queries, anything semantic
+  </Tab>
+</Tabs>
+
+The MCP tools expose the same two operations as `search` and `query` — the CLI and MCP server are both generated from the same `operations.ts` contract, so behavior is identical.

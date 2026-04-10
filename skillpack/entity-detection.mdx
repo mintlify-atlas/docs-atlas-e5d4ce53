@@ -1,0 +1,176 @@
+---
+title: "Entity detection: capture people and original ideas"
+description: "How to detect people, companies, and original thinking on every inbound message — the signal loop that makes the brain compound over time."
+---
+
+Entity detection is the mechanism that makes the brain compound. Spawn a lightweight sub-agent on every inbound message — no exceptions unless the message is purely operational. The sub-agent captures two categories of signal with equal priority: original thinking from the user, and named entity mentions. Missing either one creates a gap in the brain.
+
+## Two signal types
+
+<CardGroup cols={2}>
+  <Card title="Original thinking (PRIMARY)" icon="lightbulb">
+    Ideas, observations, theses, frameworks, and philosophical riffs. This is the highest-value signal in the entire system — it compounds into essays, talks, and strategic insight.
+  </Card>
+  <Card title="Named entities (SECONDARY)" icon="people-group">
+    People, companies, organizations, and products. Each becomes a brain page that accumulates context over time.
+  </Card>
+</CardGroup>
+
+<Warning>
+  Both signal types have equal priority and must be captured. An agent that captures entity mentions but ignores original thinking is losing the highest-value content in the system.
+</Warning>
+
+## Capturing original thinking
+
+The user's original observations, theses, frameworks, and hot takes. This is the highest-value content in the entire brain.
+
+**Capture the user's exact phrasing.** The language is the insight. "The ambition-to-lifespan ratio has never been more broken" captures something that "tension between ambition and mortality" doesn't. Don't clean it up. Don't paraphrase.
+
+Route by authorship:
+
+| Signal | Destination |
+|--------|-------------|
+| User generated the idea | `brain/originals/{slug}.md` |
+| World concept they reference | `brain/concepts/{slug}.md` |
+| Product or business idea | `brain/ideas/{slug}.md` |
+| Personal reflection or pattern | `brain/personal/reflections/` |
+
+**What counts:** Original observations about how the world works, novel connections between disparate things, frameworks and mental models, pattern recognition moments, hot takes with reasoning, metaphors that reveal new angles.
+
+**What doesn't count:** Routine operational messages ("ok", "do it"), pure questions without embedded observations, echoing back something the agent said.
+
+**Naming rule:** Use the user's own language for the slug. `meatsuit-maintenance-tax` not `biological-needs-maintenance-overhead`. The vividness is the concept.
+
+<Tip>
+  Cross-link originals to people who shaped the thinking, companies where it played out, meetings where it was discussed, and other originals it connects to. An original without cross-links is a dead original. The connections are the intelligence.
+</Tip>
+
+## Capturing entity mentions
+
+For each person, company, or organization mentioned:
+
+<Steps>
+  <Step title="Search the brain">
+    Run `gbrain search "name"` — does a page already exist?
+  </Step>
+  <Step title="Assess and route">
+    - **Rich page exists:** load it silently for context. Use the compiled truth in your response.
+    - **Thin page exists:** spawn background enrichment.
+    - **No page, entity is notable:** create a page with `gbrain put <type/slug>`, then enrich.
+    - **No page, passing mention:** note but don't create. Not every name warrants a page.
+  </Step>
+  <Step title="Update with new facts">
+    For new information about an existing entity, append to their timeline. Never rewrite timeline entries — they are the evidence trail.
+  </Step>
+  <Step title="Back-link from the source">
+    The iron law: back-link FROM entity pages TO the source that mentions them. Format:
+    `- **YYYY-MM-DD** | Referenced in [page title](path/to/page.md) — context`
+  </Step>
+</Steps>
+
+### What counts as notable
+
+- People the user interacts with or discusses (not random mentions)
+- Companies relevant to the user's work, investments, or interests
+- Concepts or frameworks the user references or creates
+- The user's own original thinking (ideas, theses, observations) — highest value
+
+## The detection protocol
+
+```
+Every inbound message
+  |
+  v
+Is this purely operational? (e.g., "ok", "do it", "yes")
+  | YES: skip entity detection
+  | NO: continue
+  v
+Spawn sub-agent (fast, cheap model — e.g. Claude Haiku)
+  |
+  v
+Scan for original thinking
+  | Found: capture verbatim in originals/{slug}.md
+  |        cross-link to related entities
+  v
+Scan for entity mentions (people, companies)
+  | For each entity:
+  |   gbrain search "name"
+  |   → exists + rich: load for context
+  |   → exists + thin: enrich in background
+  |   → doesn't exist + notable: create + enrich
+  |   → doesn't exist + passing: skip
+  v
+Back-link all created/updated pages to source
+  |
+  v
+Sync: git commit + gbrain sync --no-pull --no-embed
+```
+
+<Note>
+  Don't block the conversation. Entity detection and enrichment should happen alongside the response, not before it. The user shouldn't wait for brain writes to get an answer. Spawn and forget.
+</Note>
+
+## The iron law of back-linking
+
+When a person or company with a brain page is mentioned in any brain file, that file must be linked **from** the person or company's brain page. This is the connective tissue of the brain. An unlinked mention is a broken brain.
+
+Format: append to the entity's Timeline or See Also section:
+
+```markdown
+- **2026-04-07** | Referenced in [Team Sync meeting](meetings/2026-04-07-team-sync.md) — discussed Series B timeline
+```
+
+Every skill that writes to the brain enforces this rule. There are no exceptions.
+
+## Practical example
+
+A user mentions "Pedro" in conversation:
+
+<Steps>
+  <Step title="Search">
+    ```bash
+    gbrain search "Pedro"
+    ```
+    Returns: `people/pedro-franceschi` — rich page exists.
+  </Step>
+  <Step title="Load context">
+    ```bash
+    gbrain get people/pedro-franceschi
+    ```
+    Agent reads compiled truth: co-founder of Brex, Series B concerns, last met 2026-03-15.
+  </Step>
+  <Step title="Respond with context">
+    Agent's response references the relationship history, open threads, and latest timeline entries. The user gets a better answer than they would from a cold response.
+  </Step>
+  <Step title="Update if new info">
+    If the conversation reveals new facts about Pedro, append to his timeline immediately:
+    ```markdown
+    - **2026-04-10** | Mentioned concern about Q2 burn rate. [Source: User, direct message, 2026-04-10 2:33 PM PT]
+    ```
+  </Step>
+</Steps>
+
+## The originals folder
+
+Most knowledge systems capture what you found — articles, meetings, people. The originals folder captures what you think. Over time, it becomes a searchable archive of the user's intellectual output, organized by topic.
+
+This is the memex at its most powerful: not just remembering what you read, but remembering what you thought about what you read.
+
+<AccordionGroup>
+  <Accordion title="Authorship test — which folder?">
+    - User generated the idea? → `originals/{slug}.md`
+    - User's unique synthesis of someone else's ideas? → `originals/` (the synthesis is original)
+    - World concept someone else coined? → `concepts/{slug}.md`
+    - Product or business idea? → `ideas/{slug}.md`
+  </Accordion>
+  <Accordion title="Cross-linking originals">
+    Every original should link to:
+    - People who shaped the thinking
+    - Companies where it played out
+    - Meetings where it was discussed
+    - Books and media that influenced it
+    - Other originals it connects to (ideas form clusters)
+
+    An original without cross-links is a dead original. The connections are the intelligence.
+  </Accordion>
+</AccordionGroup>

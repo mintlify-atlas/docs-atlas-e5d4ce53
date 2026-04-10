@@ -1,0 +1,142 @@
+---
+title: "The brain-agent loop: how knowledge compounds daily"
+description: "Read before responding, write after learning. The loop that makes the brain grow smarter with every conversation — and why skipping either step costs you."
+---
+
+The brain-agent loop is the core pattern that separates a knowledge system that gets smarter from one that stays static. Every signal that flows through your agent — a meeting, an email, a tweet, a conversation — should touch the brain twice: once to read context before responding, and once to write what was learned afterward. Each cycle leaves the brain slightly better than it was.
+
+## The loop
+
+```text
+Signal arrives (message, meeting, email, tweet, link)
+  |
+  v
+Detect entities (people, companies, concepts, original thinking)
+  |
+  v
+READ: Check brain first (gbrain search, gbrain get)
+  |
+  v
+Respond with context (brain makes every answer better)
+  |
+  v
+WRITE: Update brain pages (new info compiled into existing pages)
+  |
+  v
+Sync: gbrain indexes changes (available for next query)
+  |
+  v
+(next signal arrives — agent is now smarter than last time)
+```
+
+An agent without this loop answers from stale context every time. An agent with it gets smarter with every conversation, every meeting, every email. Six months in, the compounding is visible: the agent knows more about your world than you can hold in working memory, because it never forgets and it never stops indexing.
+
+## The two invariants
+
+The loop has two invariants that must hold on every pass:
+
+<CardGroup cols={2}>
+  <Card title="READ invariant" icon="book-open">
+    Every READ improves the response. If you answered a question about a person without checking their brain page first, you gave a worse answer than you could have.
+  </Card>
+  <Card title="WRITE invariant" icon="pen-to-square">
+    Every WRITE improves future reads. If a meeting mentioned new information about a company and you didn't update the company page, you created a gap that will surface later.
+  </Card>
+</CardGroup>
+
+These are not suggestions. They are invariants. An agent that skips the read is leaving context on the table. An agent that skips the write is creating debt.
+
+## Entity detection
+
+Entity detection fires on every inbound message. A lightweight sub-agent scans each message for two categories of signal, in priority order:
+
+### 1. Original thinking (primary)
+
+The user's ideas, observations, theses, frameworks, and hot takes. This is the highest-value signal in the system. Original thinking becomes essays, talks, and strategic insight — it compounds.
+
+The agent captures the user's **exact phrasing**. The language is the insight. "The ambition-to-lifespan ratio has never been more broken" captures something that "tension between ambition and mortality" doesn't.
+
+| Signal type | Destination |
+|-------------|-------------|
+| User-generated idea | `originals/{slug}.md` |
+| World concept they reference | `concepts/{slug}.md` |
+| Product or business idea | `ideas/{slug}.md` |
+| Personal reflection | `personal/reflections/` |
+
+### 2. Entity mentions (secondary)
+
+People, companies, and media references. For each entity:
+
+<Steps>
+  <Step title="Check the brain">
+    Run `gbrain search "name"` — keyword match, fast, works from day one even without embeddings.
+  </Step>
+  <Step title="Create if missing">
+    If the entity is notable and no page exists, create a stub and enrich it. Tier the enrichment effort to the importance of the entity.
+  </Step>
+  <Step title="Load if rich">
+    If a full page exists, load compiled truth + recent timeline silently for context before responding.
+  </Step>
+  <Step title="Append if new facts exist">
+    If the message contains new information about an existing entity, append to the timeline and trigger a compiled truth rewrite.
+  </Step>
+</Steps>
+
+<Warning>
+  Iron law: every entity page that gets mentioned in a source must back-link to that source. An unlinked mention is a broken brain. Format: append to the entity's timeline or See Also section with `- **YYYY-MM-DD** | Referenced in [page title](path/to/page.md) — context`.
+</Warning>
+
+## How the agent reads and writes
+
+The agent has six core operations for brain access:
+
+<Tabs>
+  <Tab title="Read operations">
+    | Command | What it does |
+    |---------|-------------|
+    | `gbrain search <query>` | Keyword search via tsvector — fast, no embeddings required |
+    | `gbrain query <question>` | Full hybrid search: vector + keyword + RRF + multi-query expansion |
+    | `gbrain get <slug>` | Direct page read when the slug is known |
+  </Tab>
+  <Tab title="Write operations">
+    | Command | What it does |
+    |---------|-------------|
+    | `gbrain put <slug>` | Write or update a page — chunks, embeds, reconciles tags |
+    | `gbrain link <from> <to>` | Create typed link between pages |
+    | `gbrain tag <slug> <tag>` | Add tag to a page |
+  </Tab>
+</Tabs>
+
+The brain-first lookup protocol is strict: before calling any external API to research a person, company, or topic, the agent must first run `gbrain search`, then `gbrain query`, then `gbrain get`. External APIs are fallbacks, not starting points. The brain almost always has something — even a timeline entry from three months ago is better context than starting from scratch with a web search.
+
+## Memory layers
+
+GBrain coexists with two other memory layers in a production agent setup. Each layer serves a distinct purpose:
+
+| Layer | What it stores | How to query |
+|-------|----------------|--------------|
+| **gbrain** | People, companies, meetings, ideas, media | `gbrain search`, `gbrain query`, `gbrain get` |
+| **Agent memory** | Preferences, decisions, operational config | `memory_search` |
+| **Session context** | Current conversation | (automatic) |
+
+GBrain is world knowledge — what you know about people, companies, deals, and ideas. Agent memory is operational state — how the agent should behave, what the user prefers. Session context is the immediate conversation. All three should be checked in sequence.
+
+## What compounding looks like in production
+
+The reference deployment behind the GBrain skillpack has been running this loop continuously:
+
+- **14,700+ brain files** indexed and maintained by agent
+- **40+ skills** that encode domain-specific enrichment and ingestion workflows
+- **20+ cron jobs** that keep the brain alive overnight — scanning conversations, fixing broken citations, enriching missing entities
+
+The dream cycle runs while you sleep: it scans every conversation from the day, enriches missing entities, fixes broken citations, and consolidates memory. You wake up and the brain is smarter than when you went to bed.
+
+<Tip>
+  You don't need to reach this scale for the loop to be valuable. The compounding starts on day one. After your first meeting ingested, the next time that person's name comes up, the agent already has their context. After ten meetings, the network of cross-references starts revealing patterns you wouldn't have noticed manually.
+</Tip>
+
+## Setting up the loop
+
+The loop requires three things wired together: the brain-first lookup protocol in the agent's system prompt, entity detection running on every message, and write-back happening after every ingest.
+
+The [GBrain Skillpack](/skillpack/overview) is the reference implementation. It encodes the full loop as fat markdown skill files that you drop into your agent's context: `ingest/SKILL.md`, `query/SKILL.md`, `maintain/SKILL.md`, `enrich/SKILL.md`. The skills tell the agent when to read, when to write, how to enrich, and how to keep the brain healthy autonomously.

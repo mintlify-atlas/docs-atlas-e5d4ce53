@@ -1,0 +1,238 @@
+---
+title: "Install GBrain: CLI, MCP server, and TypeScript library"
+description: "Every GBrain install path: standalone CLI via bun, ClawHub plugin for OpenClaw, MCP server for Claude Code or Cursor, and a TypeScript library."
+---
+
+GBrain ships four ways: a standalone CLI installed via bun, a ClawHub bundle plugin for OpenClaw and Hermes Agent, an MCP server for Claude Code, Cursor, Windsurf, and other MCP clients, and a TypeScript library for direct programmatic use. All four surfaces expose the same 30 operations from the same contract — no drift between interfaces.
+
+<Warning>
+  GBrain connects directly to Postgres, not the Supabase REST API. You need the **Shared Pooler connection string** (port 6543), not your project URL or anon key. In your Supabase dashboard, click **Get Connected** next to the project URL, then go to **Direct Connection String** > **Session Pooler**, and copy the **Shared Pooler** string. The direct connection URL (`db.*.supabase.co:5432`) is IPv6 only and fails in most environments.
+</Warning>
+
+## Prerequisites
+
+| Dependency | What it's for | Required |
+|------------|--------------|----------|
+| **Supabase Pro account** | Postgres + pgvector database ($25/mo, 8GB) | Yes — full functionality requires Postgres |
+| **OpenAI API key** | Embeddings via `text-embedding-3-large` | No — search works (keyword only) without it |
+| **Anthropic API key** | Multi-query expansion + LLM-guided chunking (Haiku) | No — search works (no query expansion) without it |
+
+The Supabase free tier (500MB) won't fit a brain with thousands of pages and their embeddings. Supabase Pro at $25/mo for 8GB is the recommended starting point. For reference, a brain with ~7,500 pages uses about 750MB total (pages, chunks, embeddings, HNSW index overhead).
+
+## Installation paths
+
+<Tabs>
+  <Tab title="bun (standalone CLI)">
+    Install GBrain globally:
+
+    ```bash
+    bun add -g github:garrytan/gbrain
+    ```
+
+    Set your API keys:
+
+    ```bash
+    export OPENAI_API_KEY=sk-...
+    export ANTHROPIC_API_KEY=sk-ant-...
+    ```
+
+    Run the setup wizard to connect your Supabase database:
+
+    ```bash
+    gbrain init --supabase
+    ```
+
+    Or connect directly to any Postgres with pgvector:
+
+    ```bash
+    gbrain init --url postgresql://user:pass@host:6543/dbname
+    ```
+
+    The wizard:
+    1. Checks for the Supabase CLI, offers auto-provisioning
+    2. Falls back to a manual connection URL if the CLI isn't available
+    3. Runs the full schema migration (tables, indexes, triggers, extensions)
+    4. Verifies the connection and confirms the database is ready for import
+
+    Config is saved to `~/.gbrain/config.json` with 0600 permissions. Run `gbrain init` again after upgrading to apply any schema migrations — it's idempotent and safe to re-run.
+
+    After setup, index your markdown:
+
+    ```bash
+    gbrain import ~/git/brain/
+    gbrain query "what do we know about competitive dynamics?"
+    ```
+  </Tab>
+
+  <Tab title="ClawHub (OpenClaw / Hermes)">
+    Install GBrain as a ClawHub bundle plugin:
+
+    ```bash
+    clawhub install gbrain
+    ```
+
+    This installs the compiled binary, registers the MCP server, and loads all seven skill files into the agent's context automatically.
+
+    Alternatively, paste this prompt directly into OpenClaw or Hermes Agent and it handles everything — install, Supabase setup, first import, and skills configuration:
+
+    ```
+    Set up gbrain (https://github.com/garrytan/gbrain) as my
+    knowledge brain.
+
+    1. Make sure bun is installed:
+       curl -fsSL https://bun.sh/install | bash
+       Then run: bun add github:garrytan/gbrain
+
+    2. Run: gbrain init --supabase
+       (follow the wizard to connect my Supabase database)
+
+    3. Scan ~/git/ and ~/Documents/ for markdown repos,
+       pick the best one, and run: gbrain import <path> --no-embed
+
+    4. Run a query against the imported data to prove search works
+
+    5. Read docs/GBRAIN_RECOMMENDED_SCHEMA.md and offer to
+       restructure my knowledge base
+
+    6. Read docs/GBRAIN_SKILLPACK.md and update all your skills
+       with the production agent patterns: brain-agent loop,
+       entity detection, source attribution, iron law back-linking,
+       and the enrichment pipeline
+
+    7. Set up a daily cron for `gbrain check-update`.
+       Notify me on new features only, not patches.
+       Never auto-install, just tell me what's new.
+    ```
+
+    OpenClaw installs gbrain, walks through Supabase setup, discovers your markdown files, imports them, and proves search works with a query from your data. After setup, talk to your brain through OpenClaw:
+
+    ```
+    Search the brain for everything we know about [topic]
+    Ingest my meeting notes from today
+    Give me a briefing for my meetings tomorrow
+    How many pages are in the brain now?
+    ```
+  </Tab>
+
+  <Tab title="MCP server">
+    GBrain exposes 30 MCP tools via stdio. First, install the CLI via bun (see the bun tab), then add GBrain to your MCP client config.
+
+    **Claude Code** (`~/.claude/server.json`):
+
+    ```json
+    {
+      "mcpServers": {
+        "gbrain": {
+          "command": "gbrain",
+          "args": ["serve"]
+        }
+      }
+    }
+    ```
+
+    **Cursor** (Settings > MCP Servers):
+
+    ```json
+    {
+      "gbrain": {
+        "command": "gbrain",
+        "args": ["serve"]
+      }
+    }
+    ```
+
+    This gives your agent `get_page`, `put_page`, `search`, `query`, `add_link`, `traverse_graph`, `sync_brain`, `file_upload`, and 22 more tools — all generated from the same operation definitions as the CLI.
+
+    <Note>
+      The MCP tools are not enough on their own. Your agent also needs the playbook: read the [Agent Skillpack](/skillpack/overview) and paste the relevant sections into your agent's system prompt or project instructions. The skillpack tells the agent when and how to use each tool — read before responding, write after learning, detect entities on every message, back-link everything. Without it, your agent has tools but no playbook.
+    </Note>
+
+    GBrain also ships standalone skill markdown files. Copy them into your agent's context:
+
+    | Skill file | What the agent learns |
+    |------------|----------------------|
+    | `skills/ingest/SKILL.md` | How to import meetings, docs, articles |
+    | `skills/query/SKILL.md` | 3-layer search with synthesis and citations |
+    | `skills/maintain/SKILL.md` | Periodic health: stale pages, orphans, dead links |
+    | `skills/enrich/SKILL.md` | Enrich pages from external APIs |
+    | `skills/briefing/SKILL.md` | Daily briefing with meeting prep |
+    | `skills/migrate/SKILL.md` | Migrate from Obsidian, Notion, Logseq, and more |
+  </Tab>
+
+  <Tab title="TypeScript library">
+    Install GBrain as a library dependency:
+
+    ```bash
+    bun add github:garrytan/gbrain
+    ```
+
+    Import `PostgresEngine` and call operations directly:
+
+    ```typescript
+    import { PostgresEngine } from 'gbrain';
+
+    const engine = new PostgresEngine();
+    await engine.connect({ database_url: process.env.DATABASE_URL });
+    await engine.initSchema();
+
+    // Search
+    const results = await engine.searchKeyword('startup growth');
+
+    // Read
+    const page = await engine.getPage('people/pedro-franceschi');
+
+    // Write
+    await engine.putPage('concepts/superlinear-returns', {
+      type: 'concept',
+      title: 'Superlinear Returns',
+      compiled_truth: 'Paul Graham argues that returns in many fields are superlinear...',
+      timeline: '- 2023-10-01: Published on paulgraham.com',
+    });
+    ```
+
+    The `BrainEngine` interface is pluggable. `PostgresEngine` ships with v0; `SQLiteEngine` is designed and open for community PRs. See `docs/ENGINES.md` in the source repo for how to add backends.
+
+    Package exports:
+
+    ```typescript
+    import { PostgresEngine } from 'gbrain';           // main engine
+    import type { BrainEngine } from 'gbrain/engine';  // pluggable interface
+    import type { Page } from 'gbrain/types';           // type definitions
+    import { operations } from 'gbrain/operations';    // contract-first operations
+    ```
+  </Tab>
+</Tabs>
+
+## Upgrade
+
+Upgrade paths depend on how you installed:
+
+```bash
+# Installed via bun (standalone or library)
+bun update gbrain
+
+# Installed via ClawHub
+clawhub update gbrain
+
+# Compiled binary
+# Download the latest from https://github.com/garrytan/gbrain/releases
+```
+
+After upgrading, run `gbrain init` again to apply any schema migrations. It's idempotent — safe to re-run without affecting existing data.
+
+## What's next
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Walk through your first import and search step by step.
+  </Card>
+  <Card title="Agent skillpack" icon="brain" href="/skillpack/overview">
+    The playbook your agent needs: entity detection, enrichment pipeline, cron schedule.
+  </Card>
+  <Card title="CLI reference" icon="terminal" href="/reference/commands">
+    Every command, flag, and default value with real examples.
+  </Card>
+  <Card title="Knowledge model" icon="book" href="/concepts/knowledge-model">
+    The compiled truth + timeline pattern that makes the brain compound over time.
+  </Card>
+</CardGroup>

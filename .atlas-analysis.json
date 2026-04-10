@@ -1,0 +1,114 @@
+{
+  "projectType": "cli-tool",
+  "projectName": "GBrain",
+  "projectDescription": "A personal knowledge brain built on Postgres + pgvector that gives AI agents hybrid search across your markdown files, with a CLI, MCP server, and TypeScript library interface.",
+  "theme": "palm",
+  "primaryColor": "#d08b38",
+  "lightColor": "#efcf87",
+  "darkColor": null,
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "installation"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/knowledge-model",
+              "concepts/brain-agent-loop",
+              "concepts/hybrid-search",
+              "concepts/compiled-truth"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/importing",
+              "guides/sync",
+              "guides/file-storage",
+              "guides/skills",
+              "guides/migrating"
+            ]
+          },
+          {
+            "group": "Reference",
+            "pages": [
+              "reference/commands",
+              "reference/mcp-tools",
+              "reference/database-schema",
+              "reference/engines",
+              "reference/configuration"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Agent Skillpack",
+        "groups": [
+          {
+            "group": "Overview",
+            "pages": [
+              "skillpack/overview",
+              "skillpack/entity-detection"
+            ]
+          },
+          {
+            "group": "Skills",
+            "pages": [
+              "skillpack/ingest",
+              "skillpack/query",
+              "skillpack/enrich",
+              "skillpack/briefing",
+              "skillpack/maintain"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Hybrid search combining vector (pgvector/HNSW) + keyword (tsvector) + RRF fusion",
+    "Contract-first architecture: 30 operations shared across CLI, MCP server, and TypeScript library",
+    "Compiled truth + timeline knowledge model: rewritable synthesis above the line, append-only evidence below",
+    "Incremental git-to-brain sync with SHA-256 content hashing for idempotent imports",
+    "Multi-query expansion via Claude Haiku for semantic search breadth",
+    "3-tier chunking: recursive, semantic boundary detection, and LLM-guided",
+    "Fat markdown skills that tell AI agents HOW to use the brain",
+    "Pluggable storage backends: S3, Supabase Storage, local filesystem",
+    "MCP server exposing 30 tools for Claude Code, Cursor, Windsurf, and other MCP clients",
+    "Automatic schema migrations with version tracking"
+  ],
+  "publicApiSurface": [
+    "gbrain init [--supabase|--url]",
+    "gbrain import <dir> [--no-embed]",
+    "gbrain sync [--repo <path>] [--watch]",
+    "gbrain get <slug>",
+    "gbrain put <slug>",
+    "gbrain delete <slug>",
+    "gbrain list [--type] [--tag]",
+    "gbrain search <query>",
+    "gbrain query <question>",
+    "gbrain embed [--all|--stale]",
+    "gbrain link <from> <to> [--type]",
+    "gbrain graph <slug> [--depth]",
+    "gbrain backlinks <slug>",
+    "gbrain tag / untag <slug> <tag>",
+    "gbrain timeline / timeline-add",
+    "gbrain files mirror|redirect|restore|clean|verify",
+    "gbrain stats / health / doctor",
+    "gbrain history <slug> / revert <slug> <version-id>",
+    "gbrain serve (MCP stdio server)",
+    "gbrain check-update",
+    "PostgresEngine (TypeScript class: connect, initSchema, getPage, putPage, searchKeyword, searchVector, hybridSearch)",
+    "BrainEngine interface (pluggable backend contract)",
+    "operations export (contract-first operation definitions)"
+  ]
+}

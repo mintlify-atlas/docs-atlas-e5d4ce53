@@ -1,0 +1,99 @@
+---
+title: "Load GBrain skill files into your AI agent playbook"
+description: "Fat markdown skill files that give AI agents behavioral playbooks: when to read, when to write, how to enrich, and how to keep the brain current."
+---
+
+MCP tools give an agent abilities. Skills give it judgment. A GBrain skill is a fat markdown file — not code — that tells an AI agent when to use each tool, how to sequence operations, what quality rules to enforce, and what to do when things go wrong. Without skills, your agent has 30 tools and no playbook. With them, it knows exactly what to do.
+
+## What skills solve
+
+When you add GBrain as an MCP server, the agent gets tools like `get_page`, `query`, `put_page`, and `sync_brain`. But the tools don't answer questions like:
+
+- Should I search before answering, or after?
+- When I ingest a meeting, which pages do I update?
+- How do I know if compiled truth is stale?
+- What's the right way to cite a source?
+
+Skills answer these questions. They're the difference between an agent that _can_ use GBrain and one that _does_ use it well.
+
+## The 7 skills
+
+| Skill | What the agent learns |
+|-------|----------------------|
+| **ingest** | How to import meetings, docs, and articles. Updates compiled truth (rewrite, not append), appends timeline entries, creates cross-reference links across all mentioned entities. |
+| **query** | 3-layer search (keyword + vector + structured) with synthesis and citations. Explicitly says "the brain doesn't have info on X" rather than hallucinating from training data. |
+| **maintain** | Periodic health checks: find contradictions, stale compiled truth, orphan pages, dead links, tag inconsistencies, missing embeddings, and overdue open threads. |
+| **enrich** | Enrich pages from external APIs (Crustdata, Happenstance, Exa). Raw API data stored separately in `.raw/` sidecars; distilled highlights go to compiled truth. |
+| **briefing** | Daily briefing: today's meetings with full participant context, active deals with deadlines, time-sensitive threads, and recent changes in the brain. |
+| **migrate** | Universal migration from Obsidian (wikilinks), Notion (UUID-suffixed filenames), Logseq (block refs), plain markdown, CSV, JSON, and Roam Research. |
+| **setup** | Set up GBrain from scratch: auto-provision Supabase via CLI, inject brain rules into AGENTS.md, run first import, prove search works. Target time-to-hello-world under 2 minutes. |
+
+## Skill file paths
+
+Skills live in the `skills/` directory of the GBrain package:
+
+```
+skills/
+├── ingest/SKILL.md
+├── query/SKILL.md
+├── maintain/SKILL.md
+├── enrich/SKILL.md
+├── briefing/SKILL.md
+├── migrate/SKILL.md
+└── setup/SKILL.md
+```
+
+Skills are tool-agnostic. They work identically whether the agent is calling GBrain through the CLI or through the MCP server — the skill describes the workflow, not the syntax.
+
+## How to load skills
+
+<Tabs>
+  <Tab title="OpenClaw / ClawHub">
+    Install the full GBrain bundle including all skills with one command:
+
+    ```bash
+    openclaw skills install gbrain
+    ```
+
+    OpenClaw installs the MCP server, loads all skill files into the agent's context, and runs the setup skill to configure Supabase and run the first import. All skills are active immediately.
+  </Tab>
+  <Tab title="Manual MCP (Claude Code, Cursor, etc.)">
+    Add the GBrain MCP server to your client config, then copy the relevant skill files into your agent's system prompt or project instructions.
+
+    **Claude Code** (`~/.claude/server.json`):
+    ```json
+    {
+      "mcpServers": {
+        "gbrain": {
+          "command": "gbrain",
+          "args": ["serve"]
+        }
+      }
+    }
+    ```
+
+    Then paste the contents of `skills/query/SKILL.md` and `skills/ingest/SKILL.md` into your project's `AGENTS.md` or system prompt. Add other skills as needed.
+  </Tab>
+</Tabs>
+
+<Note>
+  The skill files are plain markdown. You can read, edit, and extend them. If your enrichment workflow uses a different API than what the enrich skill describes, update the skill — the agent will adapt.
+</Note>
+
+## The brain-agent loop
+
+The most important behavioral pattern skills establish is the read-write loop. The query skill instructs the agent to check the brain before answering any question about people, companies, deals, or strategy. The ingest skill instructs the agent to update the brain after every meeting or document. This loop compounds:
+
+```
+Signal arrives (meeting, email, tweet)
+  → Agent reads: gbrain search / gbrain get
+  → Responds with full context from brain
+  → Agent writes: updates pages, appends timeline, creates links
+  → gbrain sync picks up changes for next query
+```
+
+Every pass through this loop adds knowledge. The agent gets smarter each conversation because the brain has context from every previous one.
+
+## Next steps
+
+For the full production agent architecture — entity detection, enrichment pipeline, cron schedule, the dream cycle — see the [Agent Skillpack](/skillpack/overview) tab.

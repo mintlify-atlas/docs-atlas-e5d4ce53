@@ -1,0 +1,146 @@
+---
+title: "Migrate notes from Obsidian, Notion, Logseq, and Roam"
+description: "Migrate from Obsidian, Notion, Logseq, Roam, CSV, JSON, or plain markdown into GBrain with format conversion, slug normalization, and verification."
+---
+
+GBrain can import markdown from any source. If your notes are already plain markdown, a single `gbrain import` command is all you need. If they use app-specific syntax — Obsidian wikilinks, Notion UUID filenames, Logseq block references — the migrate skill handles conversion before import.
+
+## Supported source formats
+
+| Source | What needs conversion |
+|--------|-----------------------|
+| **Obsidian** | `[[Page Name]]` wikilinks → GBrain links, `#tags` extracted, attachments noted separately |
+| **Notion** | UUID-suffixed filenames stripped, database property exports mapped to frontmatter |
+| **Logseq** | `((block-uuid))` references converted, journal format normalized to dated pages |
+| **Plain markdown** | No conversion needed — direct import |
+| **CSV** | Each row becomes a page; column names become frontmatter fields; one column becomes compiled truth |
+| **JSON** | Keys mapped to page fields; structured data stored as JSONB frontmatter |
+| **Roam Research** | Nested block structure flattened into page + timeline format |
+
+## Discovery scan
+
+Before migration, GBrain's discovery scan identifies your note sources and their format:
+
+```
+=== GBrain Environment Discovery ===
+
+  ~/git/brain (2.3GB, 342 .md files, 87 binary files)
+    Type: Plain markdown (ready for import)
+
+  ~/Documents/obsidian-vault (180MB, 1,203 .md files, 0 binary files)
+    Type: Obsidian vault (wikilink conversion available)
+
+=== Discovery Complete ===
+```
+
+Plain markdown repos are ready to import directly. Detected Obsidian vaults flag wikilink conversion as available.
+
+## Plain markdown
+
+If your notes are standard markdown with no app-specific syntax:
+
+```bash
+gbrain import ~/Documents/notes/
+```
+
+That's it. GBrain handles frontmatter parsing, chunking, and embedding automatically. See [Import markdown into GBrain](/guides/importing) for performance details and flags.
+
+## Using the migrate skill with your agent
+
+For app-specific formats, ask your agent (OpenClaw, Claude Code with GBrain MCP, or similar) to run the migrate skill:
+
+```
+Migrate my Obsidian vault at ~/Documents/ObsidianVault to GBrain format
+```
+
+The agent will:
+
+<Steps>
+  <Step title="Assess the source">
+    Inspect the directory: how many files, what format, what structure?
+  </Step>
+  <Step title="Plan the mapping">
+    Map source fields to GBrain fields: `type`, `title`, `tags`, `compiled_truth`, `timeline`.
+  </Step>
+  <Step title="Test with a sample">
+    Import 5–10 files, read them back from GBrain, verify the content looks correct.
+  </Step>
+  <Step title="Bulk import">
+    Import the full directory. For Obsidian vaults, convert `[[wikilinks]]` to GBrain links.
+  </Step>
+  <Step title="Verify">
+    Check statistics, health, and spot-check pages.
+  </Step>
+  <Step title="Build links">
+    Extract cross-references from content and create typed links in GBrain.
+  </Step>
+</Steps>
+
+## Obsidian
+
+Obsidian vaults are markdown directories. You can import them directly:
+
+```bash
+gbrain import ~/Documents/ObsidianVault/
+```
+
+After import, the agent converts wikilinks:
+- `[[Page Name]]` → GBrain internal link to slug `page-name`
+- `[[Page Name|alias]]` → link with alias context
+- `#tag` inline tags → GBrain tags
+
+Frontmatter properties map to GBrain frontmatter as-is. Attachments (images, PDFs) are noted but handled separately via `gbrain files mirror`. See [File storage and binary migration](/guides/file-storage).
+
+## Notion
+
+Export from Notion: **Settings > Export > Markdown & CSV**. Notion's export creates nested directories with UUIDs appended to filenames (`My Page abc123def456.md`). The migrate skill strips the UUIDs for clean slugs and maps database properties to frontmatter.
+
+## Logseq
+
+Logseq's `((block-uuid))` references are converted to page links. Journal pages (`2026_04_10.md`) are normalized to dated timeline entries.
+
+## CSV and JSON
+
+For tabular data — CRM exports, contact lists, spreadsheets — the agent maps each row to a page:
+
+- A designated column (e.g., `name`) becomes the slug
+- Another column (e.g., `notes`) becomes `compiled_truth`
+- All other columns become frontmatter fields
+
+For JSON, structured keys map to page fields and the full payload is stored as JSONB frontmatter for later querying.
+
+## Recommended schema after migration
+
+After migration, consider restructuring your brain into MECE directories (Mutually Exclusive, Collectively Exhaustive). The recommended layout:
+
+```
+brain/
+├── people/       one page per person
+├── companies/    one page per organization
+├── deals/        financial transactions
+├── meetings/     specific events with transcripts
+├── concepts/     mental models you'd teach
+├── ideas/        raw possibilities
+├── media/        video transcripts, books, articles
+└── inbox/        unsorted quick captures
+```
+
+Full details are in `docs/GBRAIN_RECOMMENDED_SCHEMA.md` in the GBrain repository. Each directory has a `README.md` that acts as a resolver — the agent reads it before creating any new page to decide where something belongs.
+
+## Post-migration verification
+
+```bash
+gbrain stats    # verify page count matches source
+gbrain health   # check embed coverage, orphans, dead links
+```
+
+Also run a few searches to confirm content is retrievable:
+
+```bash
+gbrain query "someone you know is in the data"
+gbrain search "specific name or term from your notes"
+```
+
+<Tip>
+  After a large migration, run `gbrain embed --stale` if you used `--no-embed` during import. Semantic search won't be active until embeddings are generated.
+</Tip>

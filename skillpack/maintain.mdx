@@ -1,0 +1,153 @@
+---
+title: "Maintain skill: audit and repair your knowledge brain"
+description: "Periodic brain maintenance using GBrain's health dashboard — find stale pages, orphans, dead links, missing embeddings, and tag inconsistencies."
+---
+
+The maintain skill runs periodic health audits on your GBrain knowledge base. Over time, brains accumulate stale compiled truth, orphan pages, and dead links. This skill gives your agent a playbook for finding and fixing each class of problem — and a schedule for keeping the brain healthy without manual intervention.
+
+## Running a health check
+
+Start every maintenance session with the health dashboard:
+
+```bash
+gbrain health        # visual dashboard: embed coverage, stale pages, orphans
+gbrain doctor --json # machine-readable: pgvector, RLS, schema version, connection
+```
+
+`gbrain health` shows the big picture. `gbrain doctor` checks the infrastructure — use it to verify pgvector is enabled, RLS is active on all tables, and the schema version is current.
+
+## Maintenance tasks
+
+<AccordionGroup>
+  <Accordion title="Stale compiled truth">
+    Pages where `compiled_truth` is older than the latest timeline entry. New evidence exists that hasn't been synthesized into the assessment.
+
+    **How to find them:** `gbrain health` reports a stale page count. For each stale page:
+
+    ```bash
+    gbrain get <slug>         # read compiled truth + timeline
+    gbrain timeline <slug>    # review recent timeline entries
+    gbrain put <slug>         # write updated compiled truth (pipe updated markdown)
+    ```
+
+    **Rule:** flag pages where compiled truth is more than 30 days old but the timeline has recent entries. These need a rewrite.
+  </Accordion>
+
+  <Accordion title="Orphan pages">
+    Pages with zero inbound links — nothing in the brain references them.
+
+    ```bash
+    gbrain health              # shows orphan count
+    gbrain backlinks <slug>    # verify: are there really no backlinks?
+    gbrain link <from> <slug>  # add a link from a related page
+    ```
+
+    Review orphans before deleting: some pages are genuinely standalone (e.g., a journal entry with no entity connections). Add links from related pages where appropriate, or flag for deletion if the page is truly useless.
+  </Accordion>
+
+  <Accordion title="Dead links">
+    Links pointing to pages that no longer exist.
+
+    ```bash
+    gbrain health                   # flags dead link count
+    gbrain unlink <from> <to>       # remove the dead link
+    ```
+
+    Dead links usually appear after pages are deleted or renamed. After any bulk delete or rename operation, run a health check immediately.
+  </Accordion>
+
+  <Accordion title="Missing cross-references">
+    Pages that mention entity names in compiled truth or timeline but don't have formal typed links.
+
+    ```bash
+    gbrain get <slug>                     # read compiled truth
+    # agent: extract entity mentions from text
+    gbrain link <slug> <entity> --type references   # create the link
+    ```
+
+    This keeps the graph accurate. Every entity mentioned should have a link — not just those added during ingestion.
+  </Accordion>
+
+  <Accordion title="Tag consistency">
+    The same concept tagged inconsistently across pages (e.g., `vc` vs `venture-capital`, `ai` vs `artificial-intelligence`).
+
+    ```bash
+    gbrain list --tag vc            # find pages with old tag
+    gbrain untag <slug> vc          # remove old tag
+    gbrain tag <slug> venture-capital  # add normalized tag
+    ```
+
+    Standardize to the most common variant. Pick one canonical tag per concept and apply it uniformly.
+  </Accordion>
+
+  <Accordion title="Missing embeddings">
+    Pages or chunks without vector embeddings — they won't appear in semantic search results.
+
+    ```bash
+    gbrain embed --stale            # refresh embeddings for changed pages
+    gbrain stats                    # check Embedded count vs Pages count
+    ```
+
+    For large brains (more than 5,000 pages), run embedding in the background:
+
+    ```bash
+    nohup gbrain embed --stale > /tmp/gbrain-embed.log 2>&1 &
+    tail -f /tmp/gbrain-embed.log   # monitor progress
+    ```
+  </Accordion>
+
+  <Accordion title="RLS and schema health">
+    Row-Level Security should be enabled on all tables. Schema version should be current.
+
+    ```bash
+    gbrain doctor --json
+    ```
+
+    If RLS is missing or schema is behind, re-run init — it's idempotent:
+
+    ```bash
+    gbrain init --supabase    # applies missing migrations, re-enables RLS
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Maintenance schedule
+
+<Tabs>
+  <Tab title="Hourly / per session">
+    Run `gbrain doctor --json` as part of your agent's operational heartbeat. Check for:
+    - Connection health
+    - Schema version vs expected
+    - RLS status on all tables
+    - Embedding staleness
+
+    Report any failing checks to the user immediately.
+  </Tab>
+  <Tab title="Daily">
+    ```bash
+    gbrain stats          # confirm last_sync is within 24 hours
+    gbrain embed --stale  # refresh embeddings for recently changed pages
+    ```
+
+    If `last_sync` is more than 24 hours ago, sync has stopped — the brain is drifting from the repo.
+  </Tab>
+  <Tab title="Weekly">
+    ```bash
+    gbrain health         # full dashboard: stale, orphans, dead links
+    gbrain doctor --json  # infrastructure health
+    ```
+
+    Review each problem category. Fix orphans and dead links. Rewrite stale compiled truth for high-traffic pages first.
+  </Tab>
+</Tabs>
+
+## Quality rules
+
+<Note>
+Never delete pages without user confirmation. Log all maintenance changes via timeline entries so there's an audit trail. Run `gbrain health` before and after a maintenance session to show improvement.
+</Note>
+
+- Add a timeline entry on every page you modify during maintenance
+- Prefer adding missing links over deleting pages
+- When tag inconsistency is found, pick the most common variant — don't invent new canonical names
+- After schema migrations (`gbrain init`), always re-verify with `gbrain doctor`

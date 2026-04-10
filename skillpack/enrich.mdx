@@ -1,0 +1,177 @@
+---
+title: "Enrich skill: pull external API data into brain pages"
+description: "Pull external API data into brain pages with a tiered protocol — raw data stored in sidecars, distilled highlights written to compiled truth."
+---
+
+Enrichment is the process of pulling external data into the brain to fill gaps in compiled truth. It fires as a side effect of normal operations — when someone is mentioned in a meeting, when an email arrives from a new contact, when a calendar event includes an unfamiliar name. It is not a separate task you schedule; it is a reflex that triggers whenever the brain page for an entity is thin or missing.
+
+## When to enrich
+
+Enrichment triggers:
+
+- Entity mentioned in conversation without an existing brain page
+- Meeting attendee whose page is thin or out of date
+- Email from a contact not in the brain
+- Calendar event with unfamiliar participants
+- Contact sync surfacing a name the brain hasn't seen
+
+<Tip>
+  The brain almost always has something. Even a timeline entry from three months ago is better context than starting from scratch with a web search. Always check `gbrain search "name"` before calling any external API.
+</Tip>
+
+## The tier system
+
+Scale API spend to importance. Don't run 15 API calls on a passing mention.
+
+| Tier | Who | Effort | API calls |
+|------|-----|--------|-----------|
+| **Tier 1** | Inner circle, business partners, portfolio companies | Full pipeline, all data sources | 10–15 |
+| **Tier 2** | People you interact with occasionally | Web search + social + brain cross-reference | 3–5 |
+| **Tier 3** | Minor mentions, everyone else worth tracking | Brain cross-reference + social lookup if handle known | 1–2 |
+
+## The 7-step enrichment protocol
+
+<Steps>
+  <Step title="Identify entities">
+    From the incoming signal (meeting, email, tweet), extract people names, company names, and what they're associated with.
+  </Step>
+  <Step title="Check brain state">
+    ```bash
+    gbrain search "name"
+    ```
+    Does a page exist? If yes, read it — you're on the UPDATE path. If no, you're on the CREATE path.
+  </Step>
+  <Step title="Extract signal from source">
+    Don't just pull facts — pull texture. For each data point from the source:
+
+    - What opinion did they express? → What They Believe
+    - What are they building or shipping? → What They're Building
+    - Did they express emotion? → What Makes Them Tick
+    - Who did they engage with? → Network / Relationship
+    - Is this a recurring topic? → Hobby Horses
+    - What did they commit to? → Open Threads
+    - What was their energy? → Trajectory
+  </Step>
+  <Step title="Data source lookups">
+    Run structured lookups in priority order. Stop when you have enough signal for the entity's tier.
+
+    1. **Brain cross-reference** (always first — free, highest-value): `gbrain search "name"` to find mentions across meetings, people pages, company pages
+    2. **Web search** via Brave or Exa: background, press, talks, funding
+    3. **X/Twitter deep lookup**: beliefs, building, hobby horses, network, trajectory
+    4. **People enrichment**: Crustdata (LinkedIn data), Happenstance (career arcs, web research)
+    5. **Company/funding data**: Captain API (Pitchbook-grade funding, valuation, team data)
+    6. **Meeting history**: Circleback (transcript search, attendee lookup)
+    7. **Contact data**: Google Contacts, CRM sync
+  </Step>
+  <Step title="Save raw data">
+    Every API response gets saved to GBrain's raw_data store with the source key and a `fetched_at` timestamp. Overwrite on re-enrichment — don't append.
+
+    ```bash
+    gbrain put_raw_data people/pedro-franceschi --source crustdata --data '<json>'
+    ```
+
+    This preserves provenance. The raw data is the source of truth. The compiled truth is the distillation.
+  </Step>
+  <Step title="Write to brain">
+    **CREATE path:** Use the page template, fill compiled truth from all data gathered, add first timeline entry.
+
+    **UPDATE path:** Append to timeline. Rewrite compiled truth only if new signal materially changes the picture. Flag contradictions — don't silently resolve them.
+
+    ```markdown
+    - **2026-04-07** | Enriched from Crustdata. Role: Co-founder & CEO at Brex.
+      [Source: Crustdata LinkedIn enrichment, 2026-04-07 12:35 PM PT]
+    ```
+  </Step>
+  <Step title="Cross-reference">
+    After updating a person page: update their company page, update deal pages, add back-links. After updating a company page: update founder pages, update deal pages. Every entity page should link to every other entity page that references it.
+  </Step>
+</Steps>
+
+## The raw data sidecar pattern
+
+External API responses are never written directly into compiled truth. They go into the `raw_data` table first, then the agent distills highlights into compiled truth.
+
+```
+External API response
+  |
+  v
+gbrain put_raw_data (source-keyed, with fetched_at)
+  |
+  v
+Agent reads raw_data and distills highlights
+  |
+  v
+Distilled facts go into compiled truth
+  |
+  v
+gbrain get_raw_data (source-keyed retrieval)
+```
+
+This separation means:
+
+- Compiled truth stays human-readable and synthesis-focused
+- Raw API responses are always available for re-distillation
+- You can check when data was last fetched before calling the API again
+
+## Rate limiting and API spend management
+
+Before calling any external API, check when the raw data was last fetched:
+
+```bash
+gbrain get_raw_data people/pedro-franceschi --source crustdata
+# Returns: { fetched_at: "2026-04-03T12:35:00Z", data: {...} }
+```
+
+**Don't enrich the same page more than once per week unless explicitly requested.** If the raw data is less than 7 days old, use it. Don't call the API again.
+
+Respect API rate limits with exponential backoff. For large enrichment runs (e.g., syncing 50 new contacts), spread calls across time rather than running all at once.
+
+## Validation rules
+
+Not every API response is a valid match:
+
+<AccordionGroup>
+  <Accordion title="Skip conditions">
+    - **LinkedIn connection count < 20:** likely wrong person, skip and flag for manual review
+    - **Name mismatch between brain and API:** skip and flag — don't overwrite with the wrong person's data
+    - **Don't overwrite human-written assessments with API boilerplate:** the "What They Believe" section written from a direct conversation is more valuable than a LinkedIn bio
+  </Accordion>
+  <Accordion title="X/Twitter is underrated">
+    When you have someone's handle, their tweets are the single best source for:
+    - What they believe — opinions expressed unprompted
+    - What they're building — shipping announcements
+    - Hobby horses — recurring topics
+    - Who they engage with — reply patterns, amplification
+    - Trajectory — posting frequency, tone shifts
+
+    This goes into the brain page's "What They Believe" and "Hobby Horses" sections. Tweet URLs are mandatory in citations.
+  </Accordion>
+</AccordionGroup>
+
+## People page structure
+
+A person page is not a LinkedIn profile. It is a living portrait:
+
+| Section | What it captures |
+|---------|----------------|
+| **Executive Summary** | How you know them, why they matter |
+| **State** | Role, company, relationship, key context |
+| **What They Believe** | Ideology, worldview, first principles |
+| **What They're Building** | Current projects, features shipped |
+| **What Motivates Them** | Ambition drivers, career arc |
+| **Assessment** | Strengths, weaknesses, net read |
+| **Trajectory** | Ascending, plateauing, pivoting, declining? |
+| **Relationship** | History, temperature, open threads |
+| **Contact** | Email, phone, X handle, LinkedIn |
+| **Timeline** | Reverse chronological, append-only |
+
+Facts are table stakes. Texture is the value.
+
+## Tools used
+
+- `get_page` — read existing page before updating
+- `put_page` — write updated compiled truth
+- `add_timeline_entry` — record enrichment event
+- `list_pages` — find pages to enrich by type
+- `put_raw_data` — store raw API responses with provenance
+- `get_raw_data` — retrieve stored API responses before calling again

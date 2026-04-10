@@ -1,0 +1,272 @@
+---
+title: "GBrain engine architecture: pluggable BrainEngine API"
+description: "Reference for the pluggable BrainEngine interface, the PostgresEngine that ships with v0, and how to implement a custom storage backend."
+---
+
+Every GBrain operation goes through a single `BrainEngine` interface defined in `src/core/engine.ts`. The engine is the contract between "what the brain can do" and "how it's stored." Swap the engine implementation and everything else — the CLI, MCP server, skills, search fusion, chunking, and embeddings — stays the same.
+
+```
+CLI / MCP Server
+     (thin wrappers, identical operations)
+           |
+   BrainEngine interface
+    (pluggable backend)
+           |
+  +--------+--------+
+  |                  |
+PostgresEngine     SQLiteEngine
+  (ships v0)       (designed, community PRs welcome)
+  |
+Supabase Pro ($25/mo)
+  Postgres + pgvector + pg_trgm
+  connection pooling via Supavisor
+```
+
+## The BrainEngine interface
+
+Every method in the interface must be implemented. There are no optional methods or feature flags. If your engine cannot support a capability (e.g. vector search), implement the method to return an empty array and document the limitation.
+
+<AccordionGroup>
+  <Accordion title="Lifecycle">
+    ```typescript
+    connect(config: EngineConfig): Promise<void>;
+    disconnect(): Promise<void>;
+    initSchema(): Promise<void>;
+    transaction<T>(fn: (engine: BrainEngine) => Promise<T>): Promise<T>;
+    ```
+
+    | Method | Description |
+    |--------|-------------|
+    | `connect(config)` | Establish a database connection. `config.database_url` for Postgres, `config.database_path` for file-based engines. |
+    | `disconnect()` | Close all connections cleanly. |
+    | `initSchema()` | Apply the schema (tables, indexes, triggers, extensions). Must be idempotent — safe to re-run. |
+    | `transaction(fn)` | Execute `fn` inside a database transaction. Rolls back on error. |
+  </Accordion>
+
+  <Accordion title="Pages CRUD">
+    ```typescript
+    getPage(slug: string): Promise<Page | null>;
+    putPage(slug: string, page: PageInput): Promise<Page>;
+    deletePage(slug: string): Promise<void>;
+    listPages(filters?: PageFilters): Promise<Page[]>;
+    resolveSlugs(partial: string): Promise<string[]>;
+    ```
+
+    | Method | Description |
+    |--------|-------------|
+    | `getPage(slug)` | Return a page by exact slug, or `null` if not found. |
+    | `putPage(slug, page)` | Upsert a page. Creates a version snapshot. Returns the stored page. |
+    | `deletePage(slug)` | Delete a page and all associated data via cascades. |
+    | `listPages(filters?)` | List pages filtered by `type`, `tag`, `limit`, and `offset`. |
+    | `resolveSlugs(partial)` | Fuzzy-match a partial slug and return candidate slugs. Postgres uses `pg_trgm`; SQLite would use `LIKE` + Levenshtein. |
+
+    The interface is slug-based, not ID-based. All methods take slugs as strings. The engine resolves slugs to internal IDs. This keeps the interface portable across storage backends.
+  </Accordion>
+
+  <Accordion title="Search">
+    ```typescript
+    searchKeyword(query: string, opts?: SearchOpts): Promise<SearchResult[]>;
+    searchVector(embedding: Float32Array, opts?: SearchOpts): Promise<SearchResult[]>;
+    ```
+
+    | Method | Description |
+    |--------|-------------|
+    | `searchKeyword(query, opts?)` | Full-text keyword search. Postgres uses `tsvector` + `ts_rank`; SQLite would use FTS5 + BM25. |
+    | `searchVector(embedding, opts?)` | Approximate nearest-neighbor vector search. Postgres uses pgvector HNSW with cosine similarity; SQLite would use sqlite-vss or vec0. |
+
+    Both methods return `SearchResult[]`. RRF fusion, multi-query expansion, and 4-layer dedup run above the engine in `src/core/search/hybrid.ts` — they are engine-agnostic and operate on the same `SearchResult[]` type regardless of which engine generated the results.
+
+    Embedding generation is also outside the engine. `src/core/embedding.ts` calls the OpenAI API and passes the resulting `Float32Array` to `searchVector`. All engines share the same embedding service.
+  </Accordion>
+
+  <Accordion title="Chunks">
+    ```typescript
+    upsertChunks(slug: string, chunks: ChunkInput[]): Promise<void>;
+    getChunks(slug: string): Promise<Chunk[]>;
+    deleteChunks(slug: string): Promise<void>;
+    ```
+
+    | Method | Description |
+    |--------|-------------|
+    | `upsertChunks(slug, chunks)` | Replace all chunks for a page. Called by `importFromContent` after chunking. |
+    | `getChunks(slug)` | Retrieve all chunks for a page, ordered by `chunk_index`. |
+    | `deleteChunks(slug)` | Remove all chunks for a page. Called before re-chunking. |
+
+    Chunking is also outside the engine. `src/core/chunkers/` implements three strategies (recursive, semantic, LLM-guided) that produce `ChunkInput[]`. The engine stores and retrieves them.
+  </Accordion>
+
+  <Accordion title="Links">
+    ```typescript
+    addLink(from: string, to: string, context?: string, linkType?: string): Promise<void>;
+    removeLink(from: string, to: string): Promise<void>;
+    getLinks(slug: string): Promise<Link[]>;
+    getBacklinks(slug: string): Promise<Link[]>;
+    traverseGraph(slug: string, depth?: number): Promise<GraphNode[]>;
+    ```
+
+    | Method | Description |
+    |--------|-------------|
+    | `addLink(from, to, context?, linkType?)` | Create a typed link. Unique per `(from, to)` pair. |
+    | `removeLink(from, to)` | Remove a link. |
+    | `getLinks(slug)` | List outgoing links from a page. |
+    | `getBacklinks(slug)` | List incoming links to a page. |
+    | `traverseGraph(slug, depth?)` | Traverse the link graph up to `depth` hops. Postgres uses a recursive CTE; SQLite would use a loop with depth tracking. The interface is the same — give me a slug and max depth, return `GraphNode[]`. |
+  </Accordion>
+
+  <Accordion title="Tags">
+    ```typescript
+    addTag(slug: string, tag: string): Promise<void>;
+    removeTag(slug: string, tag: string): Promise<void>;
+    getTags(slug: string): Promise<string[]>;
+    ```
+  </Accordion>
+
+  <Accordion title="Timeline">
+    ```typescript
+    addTimelineEntry(slug: string, entry: TimelineInput): Promise<void>;
+    getTimeline(slug: string, opts?: TimelineOpts): Promise<TimelineEntry[]>;
+    ```
+
+    `TimelineInput` fields: `date` (string), `summary` (string), `detail?` (string), `source?` (string). `TimelineOpts` supports `limit`, `after`, and `before` for date-range filtering.
+  </Accordion>
+
+  <Accordion title="Raw data">
+    ```typescript
+    putRawData(slug: string, source: string, data: object): Promise<void>;
+    getRawData(slug: string, source?: string): Promise<RawData[]>;
+    ```
+
+    Sidecar JSON storage keyed by `(slug, source)`. Used by the enrichment pipeline to store raw API responses separately from compiled truth.
+  </Accordion>
+
+  <Accordion title="Versions">
+    ```typescript
+    createVersion(slug: string): Promise<PageVersion>;
+    getVersions(slug: string): Promise<PageVersion[]>;
+    revertToVersion(slug: string, versionId: number): Promise<void>;
+    ```
+
+    | Method | Description |
+    |--------|-------------|
+    | `createVersion(slug)` | Snapshot the current `compiled_truth` and `frontmatter`. |
+    | `getVersions(slug)` | List all snapshots ordered by `snapshot_at` descending. |
+    | `revertToVersion(slug, versionId)` | Restore the page to a previous snapshot. |
+  </Accordion>
+
+  <Accordion title="Stats and health">
+    ```typescript
+    getStats(): Promise<BrainStats>;
+    getHealth(): Promise<BrainHealth>;
+    ```
+
+    `BrainStats` returns: `page_count`, `chunk_count`, `embedded_count`, `link_count`, `tag_count`, `timeline_entry_count`, `pages_by_type`.
+
+    `BrainHealth` returns: `page_count`, `embed_coverage` (0–1), `stale_pages`, `orphan_pages`, `dead_links`, `missing_embeddings`.
+  </Accordion>
+
+  <Accordion title="Ingest log">
+    ```typescript
+    logIngest(entry: IngestLogInput): Promise<void>;
+    getIngestLog(opts?: { limit?: number }): Promise<IngestLogEntry[]>;
+    ```
+  </Accordion>
+
+  <Accordion title="Sync and config">
+    ```typescript
+    updateSlug(oldSlug: string, newSlug: string): Promise<void>;
+    rewriteLinks(oldSlug: string, newSlug: string): Promise<void>;
+
+    getConfig(key: string): Promise<string | null>;
+    setConfig(key: string, value: string): Promise<void>;
+    ```
+
+    | Method | Description |
+    |--------|-------------|
+    | `updateSlug(old, new)` | Rename a page's slug. Used during sync when a file is renamed. |
+    | `rewriteLinks(old, new)` | Update all link references to point to the new slug after a rename. |
+    | `getConfig(key)` | Read a brain-level config value from the `config` table. |
+    | `setConfig(key, value)` | Write a brain-level config value. |
+  </Accordion>
+</AccordionGroup>
+
+## PostgresEngine (v0, ships)
+
+`PostgresEngine` is the only engine that ships with v0. It uses the `postgres` (porsager/postgres) client and depends on two Postgres extensions:
+
+| Extension | Use |
+|-----------|-----|
+| `pgvector` | HNSW index for cosine similarity vector search, `vector(1536)` column type |
+| `pg_trgm` | GIN index for fuzzy slug resolution via trigram similarity |
+
+**Postgres-specific features:**
+- `tsvector` + `GIN` index for full-text search with weighted `ts_rank`
+- pgvector HNSW index with `vector_cosine_ops` for approximate nearest-neighbor search
+- Recursive CTEs for graph traversal
+- Trigger-based `search_vector` spanning pages and timeline entries
+- JSONB for frontmatter with GIN index for arbitrary metadata queries
+- Connection pooling via Supabase Supavisor (port 6543)
+
+**Recommended hosting:** Supabase Pro ($25/mo). Zero-ops Postgres with pgvector built in. See the [configuration reference](/reference/configuration) for how to get the correct Session Pooler connection string.
+
+## Capability matrix
+
+| Capability | PostgresEngine | SQLiteEngine (future) |
+|-----------|---------------|-----------------------|
+| CRUD | Full | Full |
+| Keyword search | `tsvector` + `ts_rank` | FTS5 + BM25 |
+| Vector search | pgvector HNSW | sqlite-vss or vec0 |
+| Fuzzy slug | `pg_trgm` | `LIKE` + Levenshtein |
+| Graph traversal | Recursive CTE | Loop with depth tracking |
+| Transactions | Full ACID | Full ACID |
+| JSONB queries | GIN index | `json_extract` |
+| Concurrent access | Connection pooling | Single writer |
+| Hosting | Supabase, self-hosted, Docker | Local file |
+
+## Adding a custom engine
+
+To implement a new engine backend:
+
+<Steps>
+  <Step title="Create the engine file">
+    Create `src/core/<name>-engine.ts` implementing the full `BrainEngine` interface.
+
+    ```typescript
+    import type { BrainEngine } from './engine.ts';
+
+    export class MyEngine implements BrainEngine {
+      async connect(config: EngineConfig): Promise<void> { /* ... */ }
+      async disconnect(): Promise<void> { /* ... */ }
+      async initSchema(): Promise<void> { /* ... */ }
+      // ... implement all methods
+    }
+    ```
+  </Step>
+  <Step title="Register in config">
+    Store the engine type in `~/.gbrain/config.json`:
+
+    ```json
+    { "engine": "myengine", "database_url": "..." }
+    ```
+  </Step>
+  <Step title="Write tests">
+    The test suite should be engine-agnostic where possible — same test cases, different engine constructor. Existing unit tests for chunking, embedding, and search fusion run without any engine at all.
+  </Step>
+  <Step title="Document your engine">
+    Add a design doc in `docs/` and update `docs/ENGINES.md` with the capability matrix row for your engine.
+  </Step>
+</Steps>
+
+### What you do not need to touch
+
+Adding a new engine does not require changes to:
+
+- `src/cli.ts` — dispatches to the engine, doesn't know which one
+- `src/mcp/server.ts` — same
+- `src/core/chunkers/*` — shared across all engines
+- `src/core/embedding.ts` — shared across all engines
+- `src/core/search/hybrid.ts`, `expansion.ts`, `dedup.ts` — operate on `SearchResult[]`, engine-agnostic
+- `skills/*` — fat markdown files, completely engine-agnostic
+
+<Note>
+  The SQLiteEngine is fully designed. See `docs/SQLITE_ENGINE.md` in the repository for the complete schema, FTS5 setup, and vector search options. Community PRs are welcome.
+</Note>

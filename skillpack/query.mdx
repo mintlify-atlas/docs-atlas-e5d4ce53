@@ -1,0 +1,193 @@
+---
+title: "Query skill: keyword, semantic, and graph retrieval"
+description: "How to use keyword, semantic, and structured retrieval together — with synthesis, source citations, and rules for when the brain doesn't have an answer."
+---
+
+The query skill is a discipline, not just a command. GBrain provides three distinct search modes, each suited to different question types. The skill tells you which mode to use, how to synthesize results into an answer, how to cite every claim, and — critically — what to say when the brain doesn't have information on something.
+
+## The 3-layer search strategy
+
+<CardGroup cols={3}>
+  <Card title="Keyword search" icon="text">
+    `gbrain search "term"` — fast, exact matching via tsvector. Use for known names, exact phrases, and day-one queries before embeddings exist.
+  </Card>
+  <Card title="Hybrid search" icon="arrows-to-circle">
+    `gbrain query "question"` — semantic meaning plus multi-query expansion. Use for conceptual questions and fuzzy matching.
+  </Card>
+  <Card title="Structured retrieval" icon="sitemap">
+    `gbrain get`, `gbrain graph`, `gbrain backlinks` — direct access to specific pages and relationship traversal. Use when you know the slug.
+  </Card>
+</CardGroup>
+
+### When to use each layer
+
+| Mode | Command | Speed | Best for |
+|------|---------|-------|----------|
+| **Keyword** | `gbrain search "name"` | Fastest | Known names, exact phrases, queries before embeddings are ready |
+| **Hybrid** | `gbrain query "question"` | Fast | Conceptual questions, "who do I know at X", semantic matching |
+| **Direct** | `gbrain get <slug>` | Instant | Loading a specific page when you already know the slug |
+| **Graph** | `gbrain graph <slug> --depth 3` | Fast | Relationship exploration, "who connects A and B" |
+| **Backlinks** | `gbrain backlinks <slug>` | Fast | "What mentions this entity" |
+
+## The query workflow
+
+<Steps>
+  <Step title="Decompose the question">
+    Break the question into search strategies before running any query. "Who should I invite to dinner who knows both Pedro and Diana?" requires backlink traversal and graph queries, not just keyword search. Identify the right tools first.
+  </Step>
+  <Step title="Execute searches in order">
+    Run the cheapest layer first. Keyword search costs nothing. Load full pages only when a chunk confirms the page is relevant.
+
+    ```bash
+    # Start with keyword for names and exact terms
+    gbrain search "Pedro Series B"
+
+    # Escalate to hybrid for conceptual questions
+    gbrain query "what do we know about Brex's fundraising history"
+
+    # Load the full page only when search confirms relevance
+    gbrain get people/pedro-franceschi
+    ```
+  </Step>
+  <Step title="Read top results">
+    Read the top 3–5 pages to get full context. Search returns chunks, not full pages. The excerpts are often enough — only load the full page when the chunk confirms relevance and you need more (compiled truth, full timeline).
+  </Step>
+  <Step title="Synthesize an answer">
+    Don't return a list of search results. Synthesize an answer from the evidence. Every claim traces back to a specific brain page.
+  </Step>
+  <Step title="Cite sources">
+    Every claim backed by a brain page citation (slug + date). Format: "According to `people/pedro-franceschi`, as of 2026-03-15…"
+  </Step>
+  <Step title="Flag gaps honestly">
+    If search returns nothing relevant, say so. "The brain doesn't have information on X" is a correct answer. Never hallucinate from outside the brain.
+  </Step>
+</Steps>
+
+## Token-budget awareness
+
+Search returns chunks, not full pages. This matters for token budgets.
+
+```
+gbrain search / gbrain query → ranked chunks with context snippets
+  → Often enough to answer directly
+
+gbrain get <slug> → full page (compiled truth + full timeline)
+  → Use only when chunk confirms relevance and you need more context
+```
+
+**Rules of thumb:**
+
+- "Tell me about Pedro" → `gbrain get pedro-franceschi` — the user wants the complete picture
+- "Did anyone mention the Series A?" → search results are enough — the user wants yes/no with evidence
+- "What's the latest on Brex?" → search first, then get the company page if needed
+
+## Multi-query expansion
+
+`gbrain query` automatically expands to related phrasings via Claude Haiku before searching. A query for "ignore conventional wisdom" will also search for "contrarian thinking", "going against the crowd", and similar phrases. This catches relevant pages whose text doesn't match your exact wording.
+
+```
+Query: "when should you ignore conventional wisdom?"
+  |
+  Multi-query expansion (Claude Haiku)
+  → "contrarian thinking startups"
+  → "going against the crowd"
+  → "non-consensus bets"
+  |
+  +---------+---------+
+  |                   |
+Vector search    Keyword search
+(HNSW cosine)   (tsvector ts_rank)
+  |                   |
+  +---------+---------+
+            |
+      RRF fusion: score = sum(1/(60 + rank))
+            |
+      4-layer dedup
+            |
+      Results
+```
+
+## Handling stale results
+
+GBrain flags pages where compiled truth is older than the latest timeline entry. These pages have new evidence that hasn't been synthesized yet.
+
+```bash
+gbrain search "Brex"
+# Returns: [STALE] companies/brex — compiled truth from 2025-11-01,
+#          latest timeline entry 2026-03-20
+```
+
+When you see a `[STALE]` flag, note it in your response: "The compiled truth for Brex is from November 2025. There are more recent timeline entries you may want to check." Then read the recent timeline entries directly.
+
+## Source precedence
+
+When multiple sources provide conflicting information:
+
+1. **User's direct statements** — highest authority, always wins
+2. **Compiled truth** — synthesized from evidence, cited
+3. **Timeline entries** — raw evidence, reverse-chronological
+4. **External sources** — web search, API enrichment — lowest authority
+
+When sources conflict, note the contradiction with both citations. Don't silently pick one.
+
+## Graph traversal
+
+For relationship questions — "who connects Pedro and the Brex board?" or "what are all the companies in my portfolio that know each other?" — use graph traversal.
+
+```bash
+# Traverse Pedro's network 3 hops deep
+gbrain graph people/pedro-franceschi --depth 3
+
+# Find everything that mentions Brex
+gbrain backlinks companies/brex
+
+# Follow a specific relationship type
+gbrain graph companies/brex --type invested_in
+```
+
+Graph traversal uses a recursive CTE in Postgres. Default depth is 5. For large graphs, start at depth 2 or 3 to limit token usage.
+
+## Example: answering "tell me about Pedro"
+
+<Steps>
+  <Step title="Direct page load">
+    ```bash
+    gbrain get people/pedro-franceschi
+    ```
+    Reads compiled truth: co-founder of Brex, Series B concerns discussed 2026-03-15.
+  </Step>
+  <Step title="Backlinks for relationship context">
+    ```bash
+    gbrain backlinks people/pedro-franceschi
+    ```
+    Returns: 3 meeting pages, 2 deal pages, 1 company page.
+  </Step>
+  <Step title="Graph for network">
+    ```bash
+    gbrain graph people/pedro-franceschi --depth 2
+    ```
+    Returns: connections to Brex founders, YC partners, Series B investors.
+  </Step>
+  <Step title="Synthesize with citations">
+    Combine compiled truth, recent timeline entries, and graph context into a synthesized response. Cite every claim: "According to `people/pedro-franceschi` (compiled truth updated 2026-03-20)…"
+  </Step>
+</Steps>
+
+## Quality rules
+
+- Never hallucinate. Only answer from brain content.
+- Cite sources: "According to `concepts/do-things-that-dont-scale`…"
+- For "who" questions, use backlinks and typed links to find connections.
+- For "what happened" questions, use timeline entries.
+- For "what do we know" questions, read compiled_truth directly.
+- Flag stale results rather than presenting them as current.
+
+## Tools used
+
+- `search` — keyword search (tsvector)
+- `query` — hybrid search (vector + keyword + RRF + multi-query expansion)
+- `get_page` — read a full page
+- `list_pages` — list pages with type/tag filters
+- `get_backlinks` — incoming links to a page
+- `traverse_graph` — recursive graph traversal
+- `get_timeline` — timeline entries for a page

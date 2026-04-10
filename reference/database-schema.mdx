@@ -1,0 +1,316 @@
+---
+title: "GBrain database schema: Postgres tables and indexes"
+description: "Reference for GBrain's 10 Postgres tables, indexes, pgvector configuration, page type enum, and storage estimates for a 7,500-page brain."
+---
+
+GBrain stores everything in a single Postgres database using 10 tables. The schema requires two extensions — `vector` (pgvector) for embedding storage and HNSW index, and `pg_trgm` for fuzzy slug resolution. Run `gbrain init` to apply the full schema; it is idempotent and safe to re-run after upgrades.
+
+```sql
+CREATE EXTENSION IF NOT EXISTS vector;
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+```
+
+## Tables
+
+<AccordionGroup>
+  <Accordion title="pages">
+    The core content table. One row per knowledge page.
+
+    ```sql
+    CREATE TABLE IF NOT EXISTS pages (
+      id            SERIAL PRIMARY KEY,
+      slug          TEXT    NOT NULL UNIQUE,
+      type          TEXT    NOT NULL,
+      title         TEXT    NOT NULL,
+      compiled_truth TEXT   NOT NULL DEFAULT '',
+      timeline      TEXT    NOT NULL DEFAULT '',
+      frontmatter   JSONB   NOT NULL DEFAULT '{}',
+      content_hash  TEXT,
+      created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+      updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    ```
+
+    | Column | Type | Description |
+    |--------|------|-------------|
+    | `id` | `SERIAL` | Auto-increment primary key |
+    | `slug` | `TEXT UNIQUE` | Unique identifier, e.g. `people/pedro-franceschi` |
+    | `type` | `TEXT` | Page type — see [page types](#page-types) |
+    | `title` | `TEXT` | Human-readable title |
+    | `compiled_truth` | `TEXT` | Current best understanding — gets rewritten when evidence changes |
+    | `timeline` | `TEXT` | Raw append-only timeline text |
+    | `frontmatter` | `JSONB` | Arbitrary metadata from the markdown YAML header |
+    | `content_hash` | `TEXT` | SHA-256 hash of the source file for import idempotency |
+    | `search_vector` | `tsvector` | Weighted full-text search vector, maintained by trigger |
+
+    **Indexes:**
+    - `idx_pages_type` — B-tree on `type` for type-filtered listing
+    - `idx_pages_frontmatter` — GIN on `frontmatter` for JSONB queries
+    - `idx_pages_trgm` — GIN with `gin_trgm_ops` on `title` for fuzzy slug resolution
+    - `idx_pages_search` — GIN on `search_vector` for full-text search
+
+    **Trigger:** `trg_pages_search_vector` rebuilds `search_vector` on every insert or update. The vector is a weighted union: title (weight A), compiled_truth (weight B), timeline text (weight C), and timeline_entries summaries (weight C).
+  </Accordion>
+
+  <Accordion title="content_chunks">
+    Chunked content with 1536-dimensional embeddings from `text-embedding-3-large`.
+
+    ```sql
+    CREATE TABLE IF NOT EXISTS content_chunks (
+      id            SERIAL PRIMARY KEY,
+      page_id       INTEGER NOT NULL REFERENCES pages(id) ON DELETE CASCADE,
+      chunk_index   INTEGER NOT NULL,
+      chunk_text    TEXT    NOT NULL,
+      chunk_source  TEXT    NOT NULL DEFAULT 'compiled_truth',
+      embedding     vector(1536),
+      model         TEXT    NOT NULL DEFAULT 'text-embedding-3-large',
+      token_count   INTEGER,
+      embedded_at   TIMESTAMPTZ,
+      created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    ```
+
+    | Column | Type | Description |
+    |--------|------|-------------|
+    | `page_id` | `INTEGER FK` | References `pages(id)`, cascades on delete |
+    | `chunk_index` | `INTEGER` | Position of chunk within the page |
+    | `chunk_text` | `TEXT` | The chunk content |
+    | `chunk_source` | `TEXT` | `compiled_truth` or `timeline` |
+    | `embedding` | `vector(1536)` | OpenAI text-embedding-3-large vector |
+    | `model` | `TEXT` | Embedding model name |
+    | `embedded_at` | `TIMESTAMPTZ` | When embedding was generated (`null` = pending) |
+
+    **Indexes:**
+    - `idx_chunks_page` — B-tree on `page_id`
+    - `idx_chunks_embedding` — HNSW index using `vector_cosine_ops` for approximate nearest-neighbor search
+  </Accordion>
+
+  <Accordion title="links">
+    Cross-references between pages. Unique per `(from_page_id, to_page_id)` pair.
+
+    ```sql
+    CREATE TABLE IF NOT EXISTS links (
+      id           SERIAL PRIMARY KEY,
+      from_page_id INTEGER NOT NULL REFERENCES pages(id) ON DELETE CASCADE,
+      to_page_id   INTEGER NOT NULL REFERENCES pages(id) ON DELETE CASCADE,
+      link_type    TEXT    NOT NULL DEFAULT '',
+      context      TEXT    NOT NULL DEFAULT '',
+      created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+      UNIQUE(from_page_id, to_page_id)
+    );
+    ```
+
+    | Column | Type | Description |
+    |--------|------|-------------|
+    | `from_page_id` | `INTEGER FK` | Source page |
+    | `to_page_id` | `INTEGER FK` | Target page |
+    | `link_type` | `TEXT` | Semantic type of the relationship — see [link types](#link-types) |
+    | `context` | `TEXT` | Human-readable context for the link |
+
+    **Indexes:** `idx_links_from`, `idx_links_to` — B-tree on both directions for fast traversal.
+  </Accordion>
+
+  <Accordion title="tags">
+    Many-to-many tags for pages. Unique per `(page_id, tag)`.
+
+    ```sql
+    CREATE TABLE IF NOT EXISTS tags (
+      id      SERIAL PRIMARY KEY,
+      page_id INTEGER NOT NULL REFERENCES pages(id) ON DELETE CASCADE,
+      tag     TEXT    NOT NULL,
+      UNIQUE(page_id, tag)
+    );
+    ```
+
+    **Indexes:** `idx_tags_tag` on `tag`, `idx_tags_page_id` on `page_id`.
+  </Accordion>
+
+  <Accordion title="timeline_entries">
+    Structured timeline events. The structured counterpart to the raw `timeline` text in `pages`. Never edited, only appended.
+
+    ```sql
+    CREATE TABLE IF NOT EXISTS timeline_entries (
+      id       SERIAL PRIMARY KEY,
+      page_id  INTEGER NOT NULL REFERENCES pages(id) ON DELETE CASCADE,
+      date     DATE    NOT NULL,
+      source   TEXT    NOT NULL DEFAULT '',
+      summary  TEXT    NOT NULL,
+      detail   TEXT    NOT NULL DEFAULT '',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    ```
+
+    | Column | Type | Description |
+    |--------|------|-------------|
+    | `date` | `DATE` | Event date |
+    | `source` | `TEXT` | Source reference (e.g. transcript file, email thread) |
+    | `summary` | `TEXT` | One-line summary — also indexed in `search_vector` |
+    | `detail` | `TEXT` | Extended markdown detail |
+
+    **Indexes:** `idx_timeline_page` on `page_id`, `idx_timeline_date` on `date`.
+
+    **Trigger:** `trg_timeline_search_vector` touches the parent page's `updated_at` on any timeline change, which re-fires the page's search vector trigger. Timeline summaries are included in full-text search.
+  </Accordion>
+
+  <Accordion title="page_versions">
+    Snapshot history for `compiled_truth`. A new snapshot is created automatically before any `put_page` or `revert_version` call.
+
+    ```sql
+    CREATE TABLE IF NOT EXISTS page_versions (
+      id             SERIAL PRIMARY KEY,
+      page_id        INTEGER NOT NULL REFERENCES pages(id) ON DELETE CASCADE,
+      compiled_truth TEXT    NOT NULL,
+      frontmatter    JSONB   NOT NULL DEFAULT '{}',
+      snapshot_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    ```
+
+    **Index:** `idx_versions_page` on `page_id`.
+  </Accordion>
+
+  <Accordion title="raw_data">
+    Sidecar JSON from external APIs (Crustdata, Happenstance, LinkedIn, etc.). Unique per `(page_id, source)` — upserted on conflict.
+
+    ```sql
+    CREATE TABLE IF NOT EXISTS raw_data (
+      id         SERIAL PRIMARY KEY,
+      page_id    INTEGER NOT NULL REFERENCES pages(id) ON DELETE CASCADE,
+      source     TEXT    NOT NULL,
+      data       JSONB   NOT NULL,
+      fetched_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      UNIQUE(page_id, source)
+    );
+    ```
+
+    **Index:** `idx_raw_data_page` on `page_id`.
+
+    Raw data is kept separate from compiled truth. The enrichment pipeline distills highlights from raw data into the compiled truth.
+  </Accordion>
+
+  <Accordion title="files">
+    Binary attachments stored in cloud storage (S3, Supabase Storage, or local). Unique per `storage_path`.
+
+    ```sql
+    CREATE TABLE IF NOT EXISTS files (
+      id           SERIAL PRIMARY KEY,
+      page_slug    TEXT   REFERENCES pages(slug) ON DELETE SET NULL ON UPDATE CASCADE,
+      filename     TEXT   NOT NULL,
+      storage_path TEXT   NOT NULL,
+      mime_type    TEXT,
+      size_bytes   BIGINT,
+      content_hash TEXT   NOT NULL,
+      metadata     JSONB  NOT NULL DEFAULT '{}',
+      created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+      UNIQUE(storage_path)
+    );
+    ```
+
+    | Column | Type | Description |
+    |--------|------|-------------|
+    | `page_slug` | `TEXT FK` | References `pages(slug)`. `ON UPDATE CASCADE` so file associations survive slug renames. `ON DELETE SET NULL` to preserve file records when a page is deleted. |
+    | `storage_path` | `TEXT UNIQUE` | Cloud storage path, e.g. `people/pedro-franceschi/headshot.jpg` |
+    | `content_hash` | `TEXT` | SHA-256 for deduplication and verification |
+    | `metadata` | `JSONB` | Arbitrary metadata |
+
+    **Indexes:** `idx_files_page` on `page_slug`, `idx_files_hash` on `content_hash`.
+  </Accordion>
+
+  <Accordion title="ingest_log">
+    Audit trail of import and ingestion operations.
+
+    ```sql
+    CREATE TABLE IF NOT EXISTS ingest_log (
+      id            SERIAL PRIMARY KEY,
+      source_type   TEXT    NOT NULL,
+      source_ref    TEXT    NOT NULL,
+      pages_updated JSONB   NOT NULL DEFAULT '[]',
+      summary       TEXT    NOT NULL DEFAULT '',
+      created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    ```
+
+    | Column | Type | Description |
+    |--------|------|-------------|
+    | `source_type` | `TEXT` | Category of source: `meeting`, `email`, `note`, `sync`, etc. |
+    | `source_ref` | `TEXT` | File path, URL, or other reference to the original source |
+    | `pages_updated` | `JSONB` | Array of page slugs updated during the ingestion |
+    | `summary` | `TEXT` | Human-readable description of what was ingested |
+  </Accordion>
+
+  <Accordion title="config">
+    Brain-level settings stored as key-value pairs. Populated with defaults by `gbrain init`.
+
+    ```sql
+    CREATE TABLE IF NOT EXISTS config (
+      key   TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
+
+    INSERT INTO config (key, value) VALUES
+      ('version', '1'),
+      ('embedding_model', 'text-embedding-3-large'),
+      ('embedding_dimensions', '1536'),
+      ('chunk_strategy', 'semantic')
+    ON CONFLICT (key) DO NOTHING;
+    ```
+
+    | Key | Default | Description |
+    |-----|---------|-------------|
+    | `version` | `1` | Schema version for migration tracking |
+    | `embedding_model` | `text-embedding-3-large` | OpenAI embedding model |
+    | `embedding_dimensions` | `1536` | Embedding vector dimensions |
+    | `chunk_strategy` | `semantic` | Default chunking strategy |
+  </Accordion>
+</AccordionGroup>
+
+## Page types
+
+The `type` column on `pages` accepts these values:
+
+| Type | Description |
+|------|-------------|
+| `person` | Individual — dossier, relationship history, contact info |
+| `company` | Organization — profile, funding, team, products |
+| `deal` | Investment or transaction being tracked |
+| `yc` | Y Combinator batch company |
+| `civic` | Government, nonprofit, or public institution |
+| `project` | Active project or initiative |
+| `concept` | Idea, framework, or mental model |
+| `source` | Article, book, video, podcast, or other media source |
+| `media` | Processed media — transcript with analysis |
+
+## Link types
+
+Common values for the `link_type` column on `links`. The field is free-text — these are conventions, not an enum:
+
+| Type | Meaning |
+|------|---------|
+| `knows` | Person knows person |
+| `invested_in` | Investor → company |
+| `works_at` | Person → company |
+| `founded` | Founder → company |
+| `references` | Page references another page |
+| `advises` | Advisor → company or person |
+| `board_member` | Person → company board |
+
+## Row Level Security
+
+RLS is enabled on all tables when the connected role has `BYPASSRLS` privilege (the Supabase `postgres` role). With no RLS policies defined, the Supabase `anon` key cannot read any data. GBrain connects via the Session Pooler (port 6543) using the `postgres` role, which bypasses RLS automatically.
+
+## Storage estimates
+
+For a brain with approximately 7,500 pages:
+
+| Component | Size |
+|-----------|------|
+| Page text (`compiled_truth` + `timeline`) | ~150 MB |
+| JSONB frontmatter + indexes | ~70 MB |
+| Content chunks (~22K, text) | ~80 MB |
+| Embeddings (22K × 1536 floats) | ~134 MB |
+| HNSW index overhead | ~270 MB |
+| Links, tags, timeline, versions | ~50 MB |
+| **Total** | **~750 MB** |
+
+<Note>
+  Supabase free tier (500 MB) won't fit a large brain. Supabase Pro ($25/mo, 8 GB) is the recommended starting point. Initial embedding cost via `text-embedding-3-large` is approximately $4–5 for 7,500 pages.
+</Note>

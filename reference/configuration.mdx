@@ -1,0 +1,152 @@
+---
+title: "GBrain configuration: keys and environment variables"
+description: "Reference for GBrain's config file location, all config keys, environment variables, and storage backend options for S3, Supabase, and local."
+---
+
+GBrain reads configuration from two places: a JSON file at `~/.gbrain/config.json` and environment variables. Environment variables always take precedence over the config file. Run `gbrain init` to create the config file — it is written with `0600` permissions (owner read/write only).
+
+## Config file
+
+**Location:** `~/.gbrain/config.json`
+
+The file is created by `gbrain init` and updated by `gbrain config set`. It is a plain JSON object:
+
+```json
+{
+  "engine": "postgres",
+  "database_url": "postgresql://postgres.abc:password@aws-0-us-east-1.pooler.supabase.com:6543/postgres"
+}
+```
+
+Config file fields map directly to `GBrainConfig` in `src/core/config.ts`:
+
+```typescript
+export interface GBrainConfig {
+  engine: 'postgres' | 'sqlite';
+  database_url?: string;
+  database_path?: string;
+  openai_api_key?: string;
+  anthropic_api_key?: string;
+}
+```
+
+## Environment variables
+
+| Variable | Description | Required |
+|----------|-------------|---------|
+| `OPENAI_API_KEY` | OpenAI API key for vector embeddings (`text-embedding-3-large`) | For vector search |
+| `ANTHROPIC_API_KEY` | Anthropic API key for multi-query expansion and LLM chunking (Claude Haiku) | For `query` |
+| `DATABASE_URL` | PostgreSQL connection URL | Alternative to config file |
+| `GBRAIN_DATABASE_URL` | PostgreSQL connection URL (GBrain-specific, takes priority over `DATABASE_URL`) | Alternative to config file |
+
+<Info>
+  Without `OPENAI_API_KEY`, search still works — keyword search only, no vector search. Without `ANTHROPIC_API_KEY`, search still works — no multi-query expansion, no LLM chunking. Set both for full hybrid search.
+</Info>
+
+**Precedence:** `GBRAIN_DATABASE_URL` > `DATABASE_URL` > `database_url` in config file. `OPENAI_API_KEY` and `ANTHROPIC_API_KEY` from the environment override any stored values.
+
+## `gbrain config` commands
+
+Read and write individual config keys from the command line:
+
+```bash
+gbrain config get <key>
+gbrain config set <key> <value>
+```
+
+```bash
+gbrain config get database_url
+gbrain config set embedding_model text-embedding-3-large
+```
+
+Brain-level config (stored in the `config` table in Postgres) tracks schema version and chunking strategy. Local config (stored in `~/.gbrain/config.json`) tracks connection credentials.
+
+## Config keys
+
+| Key | Storage | Default | Description |
+|-----|---------|---------|-------------|
+| `engine` | config file | `postgres` | Storage engine: `postgres` or `sqlite` |
+| `database_url` | config file / env | — | PostgreSQL connection URL |
+| `database_path` | config file | — | SQLite database file path (future SQLiteEngine) |
+| `openai_api_key` | config file / env | — | OpenAI API key (prefer env var) |
+| `anthropic_api_key` | config file / env | — | Anthropic API key (prefer env var) |
+| `version` | Postgres `config` table | `1` | Schema version for migration tracking |
+| `embedding_model` | Postgres `config` table | `text-embedding-3-large` | OpenAI embedding model |
+| `embedding_dimensions` | Postgres `config` table | `1536` | Embedding vector dimensions |
+| `chunk_strategy` | Postgres `config` table | `semantic` | Default chunking strategy |
+
+## Database connection
+
+GBrain connects directly to Postgres — not through the Supabase REST API. The `database_url` must be a PostgreSQL connection string.
+
+<Warning>
+  **Supabase users:** Use the **Session Pooler** connection string, not the direct connection URL or anon key. Direct connections (`db.*.supabase.co:5432`) are IPv6 only and fail in most environments.
+
+  To find your Session Pooler URL: go to your Supabase project, click the gear icon (**Project Settings**) > **Database** > **Connection string** > **URI tab** > change the dropdown to **Session pooler**.
+
+  The Session Pooler URL looks like:
+  ```
+  postgresql://postgres.abc:[password]@aws-0-us-east-1.pooler.supabase.com:6543/postgres
+  ```
+</Warning>
+
+## Storage backend configuration
+
+GBrain supports three storage backends for binary file attachments. Configure the backend during `gbrain init` or by setting config keys.
+
+<AccordionGroup>
+  <Accordion title="Supabase Storage">
+    The default when using Supabase. Uses the same database connection — no additional configuration required. Files are stored in your Supabase project's storage bucket.
+
+    ```bash
+    gbrain config set storage_backend supabase
+    gbrain config set storage_bucket brain-files
+    ```
+  </Accordion>
+
+  <Accordion title="S3-compatible (AWS S3, Cloudflare R2, MinIO)">
+    Configure with environment variables:
+
+    ```bash
+    export AWS_ACCESS_KEY_ID=...
+    export AWS_SECRET_ACCESS_KEY=...
+    export AWS_REGION=us-east-1
+    export STORAGE_BUCKET=my-brain-files
+    ```
+
+    Or set the bucket in config:
+
+    ```bash
+    gbrain config set storage_backend s3
+    gbrain config set storage_bucket my-brain-files
+    ```
+
+    Cloudflare R2 and MinIO are S3-compatible and work with the same variables.
+  </Accordion>
+
+  <Accordion title="Local filesystem">
+    Store files on local disk. Useful for testing or single-machine setups.
+
+    ```bash
+    gbrain config set storage_backend local
+    gbrain config set storage_path /path/to/files/
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Schema version tracking
+
+GBrain tracks the schema version in the `config` table (`key = 'version'`). On every `gbrain init`, the engine runs `initSchema()` which applies the full `src/schema.sql` (idempotent via `CREATE TABLE IF NOT EXISTS` and `CREATE INDEX IF NOT EXISTS`) and then runs any pending migrations via `src/core/migrate.ts`.
+
+You do not need to manage schema versions manually. Run `gbrain init` after every upgrade to apply pending migrations safely.
+
+## OpenClaw plugin config
+
+When installed via ClawHub (`openclaw skills install gbrain`), GBrain reads config from the plugin manifest (`openclaw.plugin.json`). The `configSchema` defines two fields injected into the environment by the plugin runtime:
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `database_url` | Yes | PostgreSQL Session Pooler connection string |
+| `openai_api_key` | No | Injected as `OPENAI_API_KEY` if not already set in the environment |
+
+The plugin runtime injects these as environment variables before any `gbrain` command runs. You do not need a `~/.gbrain/config.json` in the OpenClaw/Hermes path.

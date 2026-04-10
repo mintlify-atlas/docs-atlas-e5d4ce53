@@ -1,0 +1,562 @@
+---
+title: "GBrain CLI commands: complete flag and syntax reference"
+description: "Complete reference for all GBrain CLI commands, subcommands, and flags — setup, pages, search, import, files, links, tags, timeline, and admin."
+---
+
+GBrain exposes every brain operation as a CLI command. The same operations power the MCP server, so everything you can do from the terminal you can also do from an AI agent. Run `gbrain --help` for a summary, or `gbrain --tools-json` to get the full operation schema as JSON.
+
+<AccordionGroup>
+  <Accordion title="Setup">
+    ## `gbrain init`
+
+    Create and configure a brain. Runs the guided wizard to connect to a Postgres database and apply the full schema migration (tables, indexes, triggers, extensions).
+
+    ```bash
+    gbrain init                         # guided wizard (default)
+    gbrain init --supabase              # same as above, explicit Supabase path
+    gbrain init --url <connection_url>  # skip wizard, use this URL directly
+    gbrain init --non-interactive       # read URL from GBRAIN_DATABASE_URL env var
+    gbrain init --json                  # machine-readable output
+    ```
+
+    | Flag | Description |
+    |------|-------------|
+    | `--supabase` | Run the Supabase wizard |
+    | `--url <url>` | PostgreSQL connection URL |
+    | `--non-interactive` | Read URL from `GBRAIN_DATABASE_URL` or `DATABASE_URL` |
+    | `--json` | Output result as JSON |
+
+    The wizard prompts for a Supabase Session Pooler connection string. Config is saved to `~/.gbrain/config.json` with `0600` permissions. Safe to re-run after upgrading — `initSchema` is idempotent.
+
+    ```bash
+    gbrain init --url "postgresql://postgres.abc:password@aws-0-us-east-1.pooler.supabase.com:6543/postgres"
+    # Connecting to database...
+    # Running schema migration...
+    # Config saved to ~/.gbrain/config.json
+    # Brain ready. 0 pages.
+    ```
+
+    ## `gbrain upgrade`
+
+    Self-update GBrain to the latest version.
+
+    ```bash
+    gbrain upgrade
+    ```
+
+    After upgrading, re-run `gbrain init` to apply any schema migrations.
+
+    ## `gbrain check-update`
+
+    Check whether a newer version is available without upgrading. Only reports minor/major version bumps, not patches. Fails silently on network errors.
+
+    ```bash
+    gbrain check-update
+    gbrain check-update --json   # machine-readable output
+    ```
+  </Accordion>
+
+  <Accordion title="Pages">
+    ## `gbrain get`
+
+    Read a page by slug. Supports fuzzy slug matching when the exact slug is unknown.
+
+    ```bash
+    gbrain get <slug> [--fuzzy]
+    ```
+
+    | Flag | Description |
+    |------|-------------|
+    | `--fuzzy` | Enable pg_trgm fuzzy slug resolution |
+
+    ```bash
+    gbrain get people/pedro-franceschi
+    gbrain get pedro --fuzzy   # resolves to people/pedro-franceschi if unambiguous
+    ```
+
+    Returns the page content including `compiled_truth`, `timeline`, `frontmatter`, and tags.
+
+    ## `gbrain put`
+
+    Write or update a page. Accepts markdown with YAML frontmatter from a file or stdin. Automatically chunks, embeds, and reconciles tags.
+
+    ```bash
+    gbrain put <slug>            # reads from stdin
+    gbrain put <slug> < file.md  # reads from file
+    ```
+
+    ```bash
+    cat people/pedro.md | gbrain put people/pedro-franceschi
+    gbrain put concepts/superlinear-returns < superlinear.md
+    ```
+
+    Each write creates a version snapshot automatically.
+
+    ## `gbrain delete`
+
+    Delete a page and all associated data (chunks, links, tags, timeline entries, versions).
+
+    ```bash
+    gbrain delete <slug>
+    ```
+
+    ```bash
+    gbrain delete people/pedro-franceschi
+    ```
+
+    ## `gbrain list`
+
+    List pages with optional filters.
+
+    ```bash
+    gbrain list [--type <type>] [--tag <tag>] [-n <limit>]
+    ```
+
+    | Flag | Description | Default |
+    |------|-------------|---------|
+    | `--type` | Filter by page type (`person`, `company`, `deal`, etc.) | — |
+    | `--tag` | Filter by tag | — |
+    | `-n` | Maximum results | 50 |
+
+    ```bash
+    gbrain list --type person
+    gbrain list --type company --tag yc
+    gbrain list -n 100
+    ```
+  </Accordion>
+
+  <Accordion title="Search">
+    ## `gbrain search`
+
+    Keyword search using PostgreSQL full-text search (`tsvector` + `ts_rank`). Fast and exact — good for names and known phrases.
+
+    ```bash
+    gbrain search <query> [--limit <n>]
+    ```
+
+    ```bash
+    gbrain search "Pedro Franceschi"
+    gbrain search "Series A funding" --limit 10
+    ```
+
+    ## `gbrain query`
+
+    Hybrid search combining vector search, keyword search, multi-query expansion (Claude Haiku), and RRF fusion. Best for semantic questions and conceptual topics.
+
+    ```bash
+    gbrain query <question> [--limit <n>] [--no-expand]
+    ```
+
+    | Flag | Description | Default |
+    |------|-------------|---------|
+    | `--limit` | Maximum results | 20 |
+    | `--no-expand` | Disable multi-query expansion | expansion on |
+
+    ```bash
+    gbrain query "what do we know about competitive dynamics?"
+    gbrain query "when should you ignore conventional wisdom?" --limit 5
+    gbrain query "Pedro investor history" --no-expand
+    ```
+
+    Results are scored by RRF fusion and include a `stale` flag when the compiled truth is older than the latest timeline entry.
+  </Accordion>
+
+  <Accordion title="Import and export">
+    ## `gbrain import`
+
+    Import a directory of markdown files into the brain. Idempotent — re-running skips unchanged files (compared by SHA-256 content hash).
+
+    ```bash
+    gbrain import <dir> [--no-embed] [--workers <n>] [--fresh] [--json]
+    ```
+
+    | Flag | Description |
+    |------|-------------|
+    | `--no-embed` | Skip embedding generation (import fast, embed later) |
+    | `--workers <n>` | Number of parallel import workers (default: 1) |
+    | `--fresh` | Ignore any existing resume checkpoint and start from the beginning |
+    | `--json` | Machine-readable output |
+
+    ```bash
+    gbrain import ~/git/brain/
+    gbrain import ~/Documents/obsidian-vault/ --no-embed
+    gbrain import ~/git/brain/ --workers 4  # parallel workers for faster import
+    gbrain import ~/git/brain/ --fresh   # ignore checkpoint, re-import everything
+    ```
+
+    Import auto-chunks and auto-embeds unless `--no-embed` is set. ~30s for text import of 7,000 files; ~10–15 min for full embedding. If interrupted, re-running resumes from a checkpoint (use `--fresh` to override).
+
+    ## `gbrain sync`
+
+    Incremental sync from a git repo to the brain. Only processes files that changed since the last sync checkpoint.
+
+    ```bash
+    gbrain sync [--repo <path>] [--dry-run] [--full] [--no-pull] [--no-embed]
+    ```
+
+    | Flag | Description |
+    |------|-------------|
+    | `--repo <path>` | Path to git repo (uses config default if omitted) |
+    | `--dry-run` | Preview changes without applying |
+    | `--full` | Full re-sync, ignores checkpoint |
+    | `--no-pull` | Skip `git pull` before syncing |
+    | `--no-embed` | Skip embedding generation |
+
+    ```bash
+    gbrain sync
+    gbrain sync --repo ~/git/brain/ --dry-run
+    gbrain sync --full --no-embed
+    ```
+
+    ## `gbrain export`
+
+    Export all pages back to markdown files.
+
+    ```bash
+    gbrain export [--dir ./out/]
+    ```
+
+    ```bash
+    gbrain export --dir ./brain-export/
+    ```
+
+    ## `gbrain embed`
+
+    Generate or refresh embeddings for pages.
+
+    ```bash
+    gbrain embed [<slug>|--all|--stale]
+    ```
+
+    | Argument | Description |
+    |----------|-------------|
+    | `<slug>` | Embed a specific page |
+    | `--all` | Re-embed everything |
+    | `--stale` | Embed pages missing embeddings |
+
+    ```bash
+    gbrain embed --stale          # backfill after --no-embed import
+    gbrain embed people/pedro-franceschi
+    gbrain embed --all            # full refresh
+    ```
+  </Accordion>
+
+  <Accordion title="Files">
+    GBrain has a three-stage file migration lifecycle for moving binaries from git to cloud storage. Every stage is reversible until `clean`.
+
+    ## `gbrain files list`
+
+    List stored files, optionally filtered to a page.
+
+    ```bash
+    gbrain files list [<slug>]
+    ```
+
+    ```bash
+    gbrain files list
+    gbrain files list people/pedro-franceschi
+    ```
+
+    ## `gbrain files upload`
+
+    Upload a single file to storage and associate it with a page.
+
+    ```bash
+    gbrain files upload <file> --page <slug>
+    ```
+
+    ```bash
+    gbrain files upload meeting-notes.pdf --page meetings/2025-01-15
+    ```
+
+    ## `gbrain files sync`
+
+    Bulk upload a directory of files.
+
+    ```bash
+    gbrain files sync <dir>
+    ```
+
+    ```bash
+    gbrain files sync ~/git/brain/attachments/
+    ```
+
+    ## `gbrain files verify`
+
+    Verify that all uploaded files match their local copies (by content hash).
+
+    ```bash
+    gbrain files verify
+    ```
+
+    ## `gbrain files mirror`
+
+    Stage 1 of migration: copy local files to cloud storage. Local files remain untouched.
+
+    ```bash
+    gbrain files mirror <dir> [--dry-run]
+    ```
+
+    ```bash
+    gbrain files mirror ~/git/brain/attachments/ --dry-run
+    gbrain files mirror ~/git/brain/attachments/
+    ```
+
+    ## `gbrain files redirect`
+
+    Stage 2 of migration: replace local files with `.redirect` breadcrumb files (tiny YAML pointers to the cloud copy). Shrinks git repos from gigabytes to megabytes.
+
+    ```bash
+    gbrain files redirect <dir> [--dry-run]
+    ```
+
+    ```bash
+    gbrain files redirect ~/git/brain/attachments/ --dry-run
+    gbrain files redirect ~/git/brain/attachments/
+    # Your git repo just dropped from 2GB to 50MB
+    ```
+
+    ## `gbrain files restore`
+
+    Reverse of redirect: download files back from cloud and remove breadcrumbs.
+
+    ```bash
+    gbrain files restore <dir>
+    ```
+
+    ## `gbrain files clean`
+
+    Stage 3 of migration: remove breadcrumb files. Cloud becomes the only copy. **Irreversible.**
+
+    ```bash
+    gbrain files clean <dir> --yes
+    ```
+
+    ```bash
+    gbrain files clean ~/git/brain/attachments/ --yes
+    ```
+  </Accordion>
+
+  <Accordion title="Links and graph">
+    ## `gbrain link`
+
+    Create a typed link between two pages.
+
+    ```bash
+    gbrain link <from> <to> [--type <link_type>]
+    ```
+
+    | Flag | Description |
+    |------|-------------|
+    | `--type` | Link type (`knows`, `invested_in`, `works_at`, `founded`, `references`, etc.) |
+
+    ```bash
+    gbrain link people/garry-tan companies/yc --type works_at
+    gbrain link people/pedro-franceschi companies/brex --type founded
+    ```
+
+    ## `gbrain unlink`
+
+    Remove a link between two pages.
+
+    ```bash
+    gbrain unlink <from> <to>
+    ```
+
+    ```bash
+    gbrain unlink people/garry-tan companies/old-job
+    ```
+
+    ## `gbrain backlinks`
+
+    List all pages that link to a given page (incoming links).
+
+    ```bash
+    gbrain backlinks <slug>
+    ```
+
+    ```bash
+    gbrain backlinks companies/brex
+    ```
+
+    ## `gbrain graph`
+
+    Traverse the link graph from a starting page using a recursive CTE. Returns nodes and edges up to the specified depth.
+
+    ```bash
+    gbrain graph <slug> [--depth <n>]
+    ```
+
+    | Flag | Description | Default |
+    |------|-------------|---------|
+    | `--depth` | Maximum traversal depth | 5 |
+
+    ```bash
+    gbrain graph people/garry-tan
+    gbrain graph people/garry-tan --depth 2
+    ```
+  </Accordion>
+
+  <Accordion title="Tags">
+    ## `gbrain tags`
+
+    List all tags for a page.
+
+    ```bash
+    gbrain tags <slug>
+    ```
+
+    ```bash
+    gbrain tags concepts/do-things-that-dont-scale
+    ```
+
+    ## `gbrain tag`
+
+    Add a tag to a page.
+
+    ```bash
+    gbrain tag <slug> <tag>
+    ```
+
+    ```bash
+    gbrain tag concepts/do-things-that-dont-scale pg-essay
+    ```
+
+    ## `gbrain untag`
+
+    Remove a tag from a page.
+
+    ```bash
+    gbrain untag <slug> <tag>
+    ```
+
+    ```bash
+    gbrain untag concepts/do-things-that-dont-scale draft
+    ```
+  </Accordion>
+
+  <Accordion title="Timeline">
+    ## `gbrain timeline`
+
+    View timeline entries for a page. If no slug is provided, shows recent entries across all pages.
+
+    ```bash
+    gbrain timeline [<slug>]
+    ```
+
+    ```bash
+    gbrain timeline people/pedro-franceschi
+    gbrain timeline
+    ```
+
+    ## `gbrain timeline-add`
+
+    Append a timeline entry to a page. The timeline is append-only — entries are never edited.
+
+    ```bash
+    gbrain timeline-add <slug> <date> <summary>
+    ```
+
+    ```bash
+    gbrain timeline-add people/pedro-franceschi 2025-01-15 "Met at YC dinner, discussed Series B"
+    ```
+  </Accordion>
+
+  <Accordion title="Admin">
+    ## `gbrain stats`
+
+    Show brain statistics: page count, chunk count, embedded count, link count, tag count, and pages by type.
+
+    ```bash
+    gbrain stats
+    # Pages: 7,342, Chunks: 22,104, Embedded: 22,104, Links: 14,200
+    ```
+
+    ## `gbrain health`
+
+    Show health dashboard: embedding coverage percentage, stale pages (compiled truth older than latest timeline), orphan pages, and dead links.
+
+    ```bash
+    gbrain health
+    ```
+
+    ## `gbrain doctor`
+
+    Run diagnostics: checks pgvector extension, RLS status, schema version, and embedding coverage.
+
+    ```bash
+    gbrain doctor [--json]
+    ```
+
+    | Flag | Description |
+    |------|-------------|
+    | `--json` | Machine-readable output |
+
+    ## `gbrain history`
+
+    Show version history for a page.
+
+    ```bash
+    gbrain history <slug>
+    ```
+
+    ```bash
+    gbrain history people/pedro-franceschi
+    ```
+
+    ## `gbrain revert`
+
+    Revert a page to a previous version by version ID.
+
+    ```bash
+    gbrain revert <slug> <version-id>
+    ```
+
+    ```bash
+    gbrain revert people/pedro-franceschi 42
+    ```
+
+    ## `gbrain config`
+
+    Get or set brain configuration keys.
+
+    ```bash
+    gbrain config get <key>
+    gbrain config set <key> <value>
+    ```
+
+    ```bash
+    gbrain config get database_url
+    gbrain config set embedding_model text-embedding-3-large
+    ```
+
+    ## `gbrain serve`
+
+    Start the MCP server over stdio. Used by MCP clients (Claude Code, Cursor, etc.).
+
+    ```bash
+    gbrain serve
+    ```
+
+    ## `gbrain call`
+
+    Invoke a tool directly by name with a JSON params object. Useful for scripting and testing.
+
+    ```bash
+    gbrain call <tool> '<json>'
+    ```
+
+    ```bash
+    gbrain call get_page '{"slug": "people/pedro-franceschi"}'
+    gbrain call query '{"query": "competitive dynamics", "limit": 5}'
+    ```
+
+    ## `gbrain --tools-json`
+
+    Print the full operation schema as JSON. Used for tool discovery by agents and tooling.
+
+    ```bash
+    gbrain --tools-json
+    ```
+  </Accordion>
+</AccordionGroup>

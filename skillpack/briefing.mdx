@@ -1,0 +1,191 @@
+---
+title: "Briefing skill: generate daily agent intelligence reports"
+description: "How to generate a daily intelligence briefing with meeting prep, active deal tracking, time-sensitive threads, and recent brain changes."
+---
+
+The briefing skill transforms raw brain data into a daily intelligence briefing. It is the difference between "you have a meeting at 3" and "you have a meeting at 3 with Pedro — last time you discussed the Series B timeline, he was concerned about burn rate, here's the latest from his company page." The briefing runs every morning via cron and draws on context that accumulates over time.
+
+## Briefing components
+
+A complete daily briefing has six sections, each populated by specific brain queries:
+
+<CardGroup cols={2}>
+  <Card title="Today's meetings" icon="calendar">
+    Participants with dossier excerpts, shared history, and open threads. Every attendee gets a context paragraph from their brain page.
+  </Card>
+  <Card title="Active deals" icon="handshake">
+    Pipeline status, deadlines approaching in the next 7 days, and recent timeline changes.
+  </Card>
+  <Card title="Time-sensitive threads" icon="clock">
+    Action items due today or overdue. Follow-ups that have gone quiet. Items with deadlines in the next 48 hours.
+  </Card>
+  <Card title="Recent brain changes" icon="arrows-rotate">
+    Pages updated in the last 24 hours: what changed and why, drawn from timeline entries.
+  </Card>
+  <Card title="People in play" icon="users">
+    Person pages updated in the last 7 days or with high recent activity.
+  </Card>
+  <Card title="Stale alerts" icon="triangle-exclamation">
+    Pages flagged as stale that are relevant to today's meetings — compiled truth older than the latest timeline entry.
+  </Card>
+</CardGroup>
+
+## The briefing workflow
+
+<Steps>
+  <Step title="Load calendar context">
+    Pull today's events. For each meeting, extract attendee names, meeting time, and any notes from the calendar entry. This is the seed list for meeting prep queries.
+  </Step>
+  <Step title="Meeting prep for each attendee">
+    For every person on today's calendar:
+
+    ```bash
+    gbrain search "<attendee name>"         # find their brain page
+    gbrain get people/<slug>                # load compiled truth + recent timeline
+    gbrain graph people/<slug> --depth 2   # relationship context
+    gbrain search "<name> <company>"       # recent mentions across brain
+    ```
+
+    Synthesize: role, background, shared history, open items, relationship temperature. If no brain page exists, note the gap: "No brain page for Sarah Chen — consider enrichment."
+  </Step>
+  <Step title="Query active deals">
+    ```bash
+    gbrain query "active deals status"
+    gbrain list --type deal --tag active
+    ```
+
+    For each active deal: deadline, recent timeline entries, any status changes in the last 7 days.
+  </Step>
+  <Step title="Surface time-sensitive threads">
+    ```bash
+    gbrain query "pending commitments follow-ups"
+    gbrain query "action items due this week"
+    ```
+
+    Extract open items with deadlines in the next 48 hours. Flag overdue follow-ups.
+  </Step>
+  <Step title="Recent brain changes">
+    ```bash
+    gbrain list --sort updated --limit 20
+    gbrain query "meetings this week"
+    ```
+
+    What the agent updated in the last 24 hours and why — drawn from timeline entries.
+  </Step>
+  <Step title="People in play">
+    ```bash
+    gbrain search --type person --sort updated --limit 10
+    ```
+
+    People with recent activity: updated in last 7 days, high timeline volume, or flagged in recent meetings.
+  </Step>
+</Steps>
+
+## Before a meeting
+
+The meeting prep workflow in detail. Run these queries for every attendee on the calendar invite:
+
+<Steps>
+  <Step title="Find the brain page">
+    ```bash
+    gbrain search "<attendee name>"
+    ```
+  </Step>
+  <Step title="Load compiled truth">
+    ```bash
+    gbrain get people/<slug>
+    ```
+    Read: Executive Summary, State, What They Believe, Relationship, open threads.
+  </Step>
+  <Step title="Graph for relationship context">
+    ```bash
+    gbrain graph people/<slug> --depth 2
+    ```
+    Who do they know? What companies are they connected to? Any shared connections with you?
+  </Step>
+  <Step title="Recent mentions">
+    ```bash
+    gbrain search "<name> <company>"
+    ```
+    Anything mentioned about them in the last few weeks across meetings, emails, or notes?
+  </Step>
+</Steps>
+
+## Before an email reply
+
+Before drafting or triaging any email, load sender context:
+
+```bash
+gbrain search "<sender name>"
+gbrain get people/<slug>
+```
+
+Read compiled truth to understand who they are, what they care about, and your relationship history. This turns a cold reply into an informed one.
+
+## Output format
+
+The briefing is one concise paragraph per section. Actionable items are bolded.
+
+```
+DAILY BRIEFING — 2026-04-10
+========================
+
+MEETINGS TODAY
+- 3:00 PM  Team Sync
+  Participants: Pedro Franceschi (people/pedro-franceschi — co-founder Brex,
+  last discussed Series B timeline 2026-03-15, **open thread: burn rate concern**)
+
+ACTIVE DEALS
+- Acme Corp Series A — term sheet stage, **deadline: 2026-04-15**
+  Recent: Updated valuation discussed in board call 2026-04-08
+
+ACTION ITEMS
+- **Follow up with Pedro on burn rate** — due 2026-04-10
+- Review Q2 board deck draft — overdue since 2026-04-07
+
+RECENT CHANGES (24h)
+- people/sarah-chen — updated State: new role as VP Engineering at Acme Corp
+- meetings/2026-04-09-board-call — ingested, 4 entity pages updated
+
+PEOPLE IN PLAY
+- Pedro Franceschi — 3 timeline updates this week, meeting today
+- Diana Chen — email thread re Q3 launch, no reply in 5 days
+```
+
+## Scheduling
+
+Run the briefing each morning via cron, before quiet hours end:
+
+```
+# Daily briefing — 8:00 AM
+0 8 * * * "Generate my daily briefing: load today's calendar, prep for
+  each meeting using gbrain (search attendees, get pages, graph depth 2),
+  pull active deals, surface time-sensitive threads and overdue items,
+  summarize recent brain changes. Format with one paragraph per section,
+  bold all action items."
+  --name "morning-briefing"
+```
+
+<Note>
+  The briefing respects travel-aware timezone handling. The agent reads your calendar for flights and out-of-office blocks to infer your current location. All times are shown in your local timezone, not UTC or your home timezone.
+</Note>
+
+## Integration with the EA pattern
+
+The briefing is the daily manifestation of the executive assistant pattern. The brain transforms basic EA work into contextual EA work:
+
+| Without GBrain | With GBrain |
+|---------------|-------------|
+| "You have a meeting at 3" | "You have a meeting at 3 with Pedro — last time: Series B timeline, burn rate concern" |
+| "Email from Sarah" | "Email from Sarah — VP Engineering at Acme, open thread about Q3 launch deadline" |
+| "Jordan wants to meet" | "Jordan — you haven't met in 6 weeks, she has an open thread about the Q3 launch" |
+
+The scheduling context also benefits: "You haven't met with Diana in 6 weeks and she has an open thread about the Q3 launch" is a useful scheduling nudge, surfaced automatically from the brain.
+
+## Tools used
+
+- `query` — semantic search for active deals, pending commitments, meeting context
+- `get_page` — load compiled truth for meeting attendees
+- `list_pages` — list pages by type, sorted by update time
+- `get_health` — stale alerts relevant to today's meetings
+- `get_timeline` — recent timeline entries for specific pages

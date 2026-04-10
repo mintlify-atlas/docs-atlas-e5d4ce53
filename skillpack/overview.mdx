@@ -1,0 +1,186 @@
+---
+title: "Agent Skillpack: production AI agent architecture guide"
+description: "Production AI agent architecture for GBrain — the read-write loop, entity detection, enrichment pipeline, and cron schedule from a real deployment."
+---
+
+The GBrain Skillpack is not a tutorial. It is a pattern book for production AI agents — drawn from a real deployment running 14,700+ brain files, 40+ skills, and 20+ cron jobs continuously. This page covers the core mental model: what the skillpack is, where the idea comes from, how the read-write loop works, and how to load the skillpack into your agent.
+
+## The memex vision, realized
+
+Vannevar Bush described the memex in "As We May Think" (1945): a device where an individual stores all their books, records, and communications, mechanized so it may be consulted with exceeding speed and flexibility. Bush imagined trails of association linking items together. GBrain has typed links, backlinks, and graph traversal. Bush imagined a scholar building a trail through a body of knowledge. GBrain's compiled truth pattern is that trail, continuously rewritten as new evidence arrives.
+
+The key difference from Bush's vision: the memex was passive — you had to build the trails. GBrain is active. The agent detects entities, enriches pages, creates cross-references, and maintains compiled truth automatically. You don't build the memex. The memex builds itself.
+
+## The brain-agent loop
+
+Every signal that flows through your agent should touch the brain in both directions. Read before responding. Write after learning something new. The next time that person, company, or concept comes up, the agent already has context.
+
+```
+Signal arrives (message, meeting, email, tweet, link)
+  |
+  v
+Detect entities (people, companies, concepts, original thinking)
+  |
+  v
+READ: Check brain first (gbrain search, gbrain get)
+  |
+  v
+Respond with context (brain makes every answer better)
+  |
+  v
+WRITE: Update brain pages (new info compiled into existing pages)
+  |
+  v
+Sync: gbrain indexes changes (available for next query)
+  |
+  v
+(next signal arrives — agent is now smarter than last time)
+```
+
+An agent without this loop answers from stale context every time. An agent with it gets smarter with every conversation, every meeting, every email. Six months in, the compounding is visible: the agent knows more about your world than you can hold in working memory, because it never forgets and it never stops indexing.
+
+The loop has two invariants that must never be violated:
+
+<CardGroup cols={2}>
+  <Card title="Every READ improves the response" icon="magnifying-glass">
+    If you answered a question about a person without checking their brain page first, you gave a worse answer than you could have.
+  </Card>
+  <Card title="Every WRITE improves future reads" icon="pen-to-square">
+    If a meeting transcript mentioned new information about a company and you didn't update the company page, you created a gap that will bite you later.
+  </Card>
+</CardGroup>
+
+## The three knowledge layers
+
+A production agent has three layers of memory. All three should be consulted. They serve different purposes and should never be conflated.
+
+| Layer | What it stores | How to query |
+|-------|---------------|-------------|
+| **GBrain** | World knowledge — people, companies, meetings, ideas, original thinking | `gbrain search`, `gbrain query`, `gbrain get` |
+| **Agent memory** | Operational state — preferences, decisions, tool config, session continuity | OpenClaw: `memory_search`. Hermes: `memory(action="read")` |
+| **Session context** | Current conversation window — what was just said, what the user just asked | Already in context (automatic) |
+
+GBrain is for facts about the world. Agent memory is for how the agent operates. Session context is for right now. Don't store operational preferences in GBrain. Don't store people dossiers in agent memory.
+
+<AccordionGroup>
+  <Accordion title="When to use each layer">
+    - **"Who is Pedro?"** → GBrain (world knowledge about a person)
+    - **"How do I format messages for this user?"** → Agent memory (operational preference)
+    - **"What did I just ask you to do?"** → Session context (immediate)
+    - **"What happened in Tuesday's meeting?"** → GBrain (meeting transcript + entity pages)
+    - **"Which API key goes where?"** → Agent memory (tool configuration)
+  </Accordion>
+</AccordionGroup>
+
+## Production context
+
+The patterns in this skillpack come from a real deployment, not a demo. The numbers:
+
+- **14,700+ brain files** — people, companies, meetings, concepts, ideas, media
+- **40+ skills** — covering every signal type with no overlap
+- **20+ cron jobs** — running continuously to keep the brain alive
+
+The reference cron schedule below covers the recurring jobs a production agent runs. Each job interacts with the brain in a specific way.
+
+| Frequency | Job | Brain interaction |
+|-----------|-----|-------------------|
+| Every 30 min | Email monitoring | `gbrain search` sender, update people pages |
+| Every 30 min | Message monitoring | `gbrain search` sender, entity detection |
+| Hourly | Social media ingestion | Create/update media pages, entity extraction |
+| Hourly | Workspace scanning | Update project pages, flag mentions |
+| 3x/day | Meeting processing | Full ingestion pipeline |
+| Daily AM | Morning briefing | `gbrain search` for calendar attendees, deal status, active threads |
+| Daily AM | Task preparation | Pull today's tasks, cross-reference brain for context |
+| Weekly | Brain maintenance | `gbrain doctor`, `gbrain embed --stale`, orphan detection |
+| Weekly | Contacts sync | New contacts → brain pages, enrichment pipeline |
+
+<Note>
+  Every cron job should include a quiet hours check, location/timezone awareness, and sub-agent spawning for heavy work. During quiet hours (e.g., 11 PM–8 AM), hold non-urgent notifications and fold them into the next morning briefing.
+</Note>
+
+## The dream cycle
+
+The most important cron job runs while you sleep. When quiet hours start, the dream cycle kicks off:
+
+<Steps>
+  <Step title="Entity sweep">
+    Scan today's conversations for every person, company, concept, or idea mentioned. Check each against the brain.
+  </Step>
+  <Step title="Enrich the thin spots">
+    Create pages for entities that don't exist yet. Update pages that are thin. Write direct assessments verbatim — the exact words used, not a cleaned-up paraphrase.
+  </Step>
+  <Step title="Fix broken citations">
+    Tweet links without URLs, missing source attributions, timeline entries without dates. Citation hygiene problems that accumulate during fast daytime conversations get cleaned up in the background.
+  </Step>
+  <Step title="Consolidate memory">
+    Signals that matter get promoted to MEMORY.md. Patterns noticed across multiple conversations get surfaced. Ephemeral context becomes durable knowledge.
+  </Step>
+</Steps>
+
+The dream cycle is why the brain compounds. During the day, you're moving fast and the agent captures signal opportunistically. At night, the agent goes back through everything methodically. You wake up and the brain is smarter than when you went to sleep.
+
+<Tabs>
+  <Tab title="OpenClaw">
+    OpenClaw ships with DREAMS.md as a default skill. Three phases (light, deep, REM) run automatically during quiet hours. Entity sweeps, memory promotion, and a narrative dream diary are built in. No configuration required.
+  </Tab>
+  <Tab title="Hermes Agent">
+    Hermes has all the pieces but doesn't bundle a dream cycle by default. Set one up with the cron scheduler:
+
+    ```
+    /cron add "0 2 * * *" "Dream cycle: search today's sessions for
+      entities I mentioned. For each person, company, or idea: check
+      if a brain page exists (gbrain search), create or update it if
+      thin. Fix any broken citations. Then consolidate: read MEMORY.md,
+      promote important signals, remove stale entries."
+      --name "nightly-dream-cycle"
+    ```
+  </Tab>
+</Tabs>
+
+## How to load the skillpack
+
+<Tabs>
+  <Tab title="OpenClaw / ClawHub">
+    Install via ClawHub and the agent gets the CLI, MCP tools, and all skill files loaded automatically:
+
+    ```bash
+    openclaw skills install gbrain
+    ```
+
+    The orchestrator runs the setup wizard, connects to Supabase, imports your markdown, and loads the skillpack into the agent's context.
+  </Tab>
+  <Tab title="Manual (any agent)">
+    Copy the contents of each skill file into your agent's system prompt or project instructions. The skill files are standalone instruction sets — they work with any agent that can call GBrain tools.
+
+    ```
+    skills/ingest/SKILL.md    → how to import meetings, docs, articles
+    skills/query/SKILL.md     → 3-layer search with synthesis and citations
+    skills/maintain/SKILL.md  → periodic health: stale pages, orphans, dead links
+    skills/enrich/SKILL.md    → enrich pages from external APIs
+    skills/briefing/SKILL.md  → daily briefing with meeting prep
+    ```
+  </Tab>
+</Tabs>
+
+## Skills in this section
+
+<CardGroup cols={2}>
+  <Card title="Entity detection" icon="radar" href="/skillpack/entity-detection">
+    Spawn a sub-agent on every message. Capture people, companies, and original thinking.
+  </Card>
+  <Card title="Ingest" icon="file-import" href="/skillpack/ingest">
+    Convert meetings, docs, and articles into brain pages with full entity propagation.
+  </Card>
+  <Card title="Query" icon="magnifying-glass" href="/skillpack/query">
+    3-layer search strategy with synthesis and source citations.
+  </Card>
+  <Card title="Enrich" icon="sparkles" href="/skillpack/enrich">
+    Pull external API data into the brain using a 7-step tiered protocol.
+  </Card>
+  <Card title="Briefing" icon="newspaper" href="/skillpack/briefing">
+    Generate daily intelligence briefings with meeting prep and active deal tracking.
+  </Card>
+  <Card title="Maintain" icon="wrench" href="/skillpack/maintain">
+    Periodic brain health audits: stale pages, orphans, dead links, contradictions.
+  </Card>
+</CardGroup>

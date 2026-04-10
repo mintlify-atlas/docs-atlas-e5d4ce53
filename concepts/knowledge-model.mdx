@@ -1,0 +1,146 @@
+---
+title: "The GBrain knowledge model: pages, types, and structure"
+description: "Every brain page is a two-layer intelligence assessment: compiled truth above the line, append-only timeline below. Nine page types, one home per entity."
+---
+
+Every page in a GBrain brain repo follows the same structural pattern: a rewritable synthesis at the top, an append-only evidence trail at the bottom, separated by a horizontal rule. This pattern is what makes the brain both fast to query and trustworthy over time — the synthesis is pre-computed, not re-derived on every request.
+
+## Page types
+
+GBrain recognizes nine built-in page types, each mapped to a specific knowledge domain:
+
+| Type | What it holds |
+|------|---------------|
+| `person` | One page per human — dossier, relationship history, open threads |
+| `company` | Organization profile, funding, key people, status |
+| `deal` | Financial transaction with terms, decisions, and timeline |
+| `yc` | YC batch entries (companies, founders, batch context) |
+| `civic` | Political landscape, policy, government entities |
+| `project` | Active builds — has a repo, spec, or team |
+| `concept` | Mental models, frameworks, and ideas you'd teach |
+| `source` | Raw data imports, archived documents, external references |
+| `media` | Video transcripts, books, articles, podcast episodes |
+
+The `type` field goes in the frontmatter of every page and determines how the agent routes entity detection, enrichment, and search diversity caps.
+
+## The compiled truth + timeline pattern
+
+Every page splits its content at a `---` horizontal rule. Above the line is the **compiled truth** — your current best understanding of the entity, rewritten whenever new evidence changes the picture. Below the line is the **timeline** — an append-only log of dated evidence entries that is never rewritten, only extended.
+
+```markdown
+---
+type: concept
+title: Do Things That Don't Scale
+tags: [startups, growth, pg-essay]
+---
+
+Paul Graham's argument that startups should do unscalable things early on.
+The most common: recruiting users manually, one at a time. Airbnb went
+door to door in New York photographing apartments. Stripe manually
+installed their payment integration for early users.
+
+The key insight: the unscalable effort teaches you what users actually
+want, which you can't learn any other way.
+
+---
+
+- 2013-07-01: Published on paulgraham.com
+- 2024-11-15: Referenced in batch W25 kickoff talk
+- 2025-02-20: Cited in discussion about AI agent onboarding strategies
+```
+
+The compiled truth is **the answer**. The timeline is **the proof**.
+
+## Above the line: compiled truth
+
+The compiled truth section is an executive summary that reflects the current state of everything known about the entity. It is always current because the agent rewrites it when new information arrives — it does not append to it.
+
+A well-formed compiled truth section has four parts:
+
+<Steps>
+  <Step title="Executive summary">
+    One paragraph that captures the state of play. If you read only this, you understand the entity. Written for a reader who has zero context.
+  </Step>
+  <Step title="State fields">
+    Structured key-value facts — role, company, stage, score, whatever is queryable. Agents and humans scan these first. These map directly to frontmatter JSONB metadata for structured queries.
+  </Step>
+  <Step title="Open threads">
+    Active items that require follow-up. Removed when resolved (the resolution moves to the timeline). This is what separates a live brain from a static wiki.
+  </Step>
+  <Step title="See also">
+    Typed cross-references to related pages. The cross-links are what make the brain a graph, not a flat file list.
+  </Step>
+</Steps>
+
+## Below the line: timeline
+
+The timeline is an append-only, reverse-chronological log of everything that has happened, been learned, or been cited about the entity. Each entry has a date and a source.
+
+```markdown
+- 2025-03-01: Met at YC demo day — discussed Series A timeline (source: calendar/2025-03-01-yc-demo)
+- 2024-11-15: Referenced in batch W25 kickoff talk (source: media/w25-kickoff-talk)
+- 2024-09-20: Company announced $12M seed round (source: techcrunch.com)
+```
+
+The timeline is **never rewritten**. When an open thread resolves, the resolution appends to the timeline — the thread entry is removed from compiled truth, not edited in-place. This preserves the full audit trail.
+
+## Frontmatter schema
+
+Every page starts with YAML frontmatter. The required fields are `type` and `title`. Tags and arbitrary JSONB metadata are optional but strongly recommended for filtering and graph queries.
+
+```yaml
+---
+type: person
+title: Pedro Franceschi
+tags: [fintech, yc, w16, portfolio]
+company: brex
+role: co-founder
+linkedin: pedro-franceschi
+last_contact: 2025-03-01
+---
+```
+
+The `frontmatter` column in Postgres stores this as JSONB, which means you can query against any field — `gbrain list --type person` uses the `type` index, and the agent can traverse by tag, company, or any custom field.
+
+## MECE directory structure
+
+Every piece of knowledge has exactly one primary home. The brain uses MECE (mutually exclusive, collectively exhaustive) directories to enforce this: a `RESOLVER.md` at the root of the brain acts as a numbered decision tree that the agent walks before creating any new page.
+
+```text
+brain/
+├── RESOLVER.md        — master decision tree (agent reads this first)
+├── people/            — one page per human being
+├── companies/         — one page per organization
+├── deals/             — financial transactions
+├── concepts/          — mental models and frameworks
+├── originals/         — the user's own ideas and theses
+├── media/             — video, books, articles, podcasts
+└── inbox/             — unsorted captures (temporary)
+```
+
+<Note>
+  MECE applies to directories, not to reality. A person can be a founder, investor, and friend — they get one page in `people/`, and their other facets are expressed through typed links and backlinks.
+</Note>
+
+## Why pre-computed synthesis matters
+
+Most RAG systems re-derive answers from raw chunks on every query. GBrain inverts this: the agent synthesizes knowledge into compiled truth when information arrives, so queries hit pre-computed summaries rather than raw evidence.
+
+The practical effect: a query for "what's the current state of the Acme deal?" returns the compiled truth paragraph immediately, along with stale alerts if the timeline has entries newer than the last compiled truth update. The synthesis work has already been done.
+
+<Tip>
+  Think of each brain page as an intelligence assessment. A good intelligence assessment tells you the current picture in the first paragraph, then backs it up with a dated evidence trail. That's exactly what the compiled truth + timeline pattern enforces.
+</Tip>
+
+## Cross-references and typed links
+
+Pages link to each other through the `links` table, with typed edges:
+
+```bash
+gbrain link people/pedro-franceschi companies/brex --type founded
+gbrain link people/pedro-franceschi deals/brex-series-a --type involved_in
+```
+
+Link types include `knows`, `invested_in`, `works_at`, `founded`, `references`, and any custom type you define. The graph is traversable with `gbrain graph <slug> --depth 5`, which uses a recursive CTE in Postgres.
+
+The `See Also` section of compiled truth is the human-readable projection of these links. The links table is the machine-queryable version.

@@ -1,0 +1,141 @@
+---
+title: "Migrate binary files from git repo to cloud storage"
+description: "Move binary files from your git repo to cloud storage in three stages: mirror, redirect, and clean — with full reversibility until the final step."
+---
+
+Brain repos accumulate binary files — images, PDFs, audio recordings, raw API responses — that have no business being in git. A repo with 3,000 markdown pages can easily grow to 2GB of binaries, making `git clone` slow and CI expensive. GBrain provides a three-stage migration lifecycle that moves binaries to cloud storage while preserving every reference in your markdown.
+
+## The three-stage lifecycle
+
+```
+Local files in git repo
+  ↓ gbrain files mirror <dir>
+Cloud copy exists, local files untouched
+
+  ↓ gbrain files redirect <dir>
+Local files replaced with .redirect breadcrumbs (tiny YAML pointers)
+
+  ↓ gbrain files clean <dir>
+Breadcrumbs removed, cloud is the only copy
+```
+
+Every stage is reversible until `clean`. After `clean`, the cloud copy is the only copy (git history still has the originals if you ever need them).
+
+## Stage 1 — Mirror
+
+Mirror copies files to cloud storage while leaving your local copies untouched. Your git repo is unchanged at this point.
+
+```bash
+gbrain files mirror ~/git/brain/attachments/ --dry-run   # preview first
+gbrain files mirror ~/git/brain/attachments/
+# Mirrored 87 files. Marker written to attachments/.supabase
+```
+
+The `--dry-run` flag lists what would be uploaded without doing anything. Always run it first on a large directory.
+
+GBrain writes a `.supabase` marker file to the directory with metadata about the sync: bucket name, file count, and timestamp. This marker is required before you can proceed to stage 2.
+
+## Stage 2 — Redirect
+
+Redirect replaces each local file with a `.redirect` breadcrumb — a tiny YAML file that records where the file moved. The originals are deleted from disk.
+
+```bash
+gbrain files redirect ~/git/brain/attachments/ --dry-run
+gbrain files redirect ~/git/brain/attachments/
+# Redirected 87 files. Originals removed, breadcrumbs created.
+# To undo: gbrain files restore attachments/
+```
+
+After redirect, your git repo drops dramatically in size:
+
+```
+# Before: 2GB repo
+# After:  ~50MB (only markdown + tiny .redirect files remain)
+```
+
+The file resolver (`src/core/file-resolver.ts`) handles fallback transparently: any code that references files by path checks for a `.redirect` breadcrumb and resolves to the cloud URL automatically. Nothing breaks.
+
+### Undo redirect
+
+If you need the files back on disk:
+
+```bash
+gbrain files restore ~/git/brain/attachments/
+# Restored 87 files.
+```
+
+`restore` downloads each file from cloud storage and deletes the breadcrumbs, putting the directory back in the post-mirror state.
+
+## Stage 3 — Clean (irreversible)
+
+Once you are confident the cloud copy is correct, remove the breadcrumbs entirely. This is irreversible — after clean, cloud storage is the only copy.
+
+```bash
+gbrain files clean ~/git/brain/attachments/ --yes
+# Cleaned 87 redirect breadcrumbs. Cloud storage is now the only source.
+```
+
+<Warning>
+  `clean` requires `--yes` as an explicit confirmation flag. Git history still has the originals if you ever need recovery, but you cannot run `gbrain files restore` after clean.
+</Warning>
+
+## Storage backends
+
+GBrain supports three storage backends configured during `gbrain init`:
+
+| Backend | When to use |
+|---------|-------------|
+| Supabase Storage | Already using Supabase for Postgres; zero additional setup |
+| S3-compatible (AWS S3, Cloudflare R2, MinIO) | Existing S3 infrastructure or cost optimization |
+| Local filesystem | Testing and development only |
+
+The backend is set in `~/.gbrain/config.json` under the `storage` key. S3-compatible backends accept `accessKeyId`, `secretAccessKey`, `bucket`, `region`, and `endpoint`.
+
+## Additional file commands
+
+<CodeGroup>
+
+```bash List files
+gbrain files list                       # all stored files (up to 100)
+gbrain files list people/pedro-franceschi  # files for a specific page
+```
+
+```bash Upload and sync
+gbrain files upload photo.jpg --page people/pedro-franceschi
+gbrain files sync ~/git/brain/attachments/  # bulk upload directory
+```
+
+```bash Verify and status
+gbrain files verify          # verify all uploads have valid hashes
+gbrain files status          # show migration status of current directory
+gbrain files unmirror <dir>  # remove .supabase marker (files stay in cloud)
+```
+
+</CodeGroup>
+
+`gbrain files status` gives a quick read on where things stand:
+
+```
+File migration status:
+  Mirrored directories: 1
+  Redirected files: 87
+  Local binary files: 0
+```
+
+## Storage estimates
+
+For a brain with approximately 7,500 pages:
+
+| Component | Size |
+|-----------|------|
+| Page text (compiled truth + timeline) | ~150MB |
+| JSONB frontmatter + indexes | ~70MB |
+| Content chunks (~22K, text) | ~80MB |
+| Embeddings (22K × 1536 floats) | ~134MB |
+| HNSW index overhead | ~270MB |
+| Links, tags, timeline, versions | ~50MB |
+| **Total** | **~750MB** |
+
+<Info>
+  Supabase free tier (500MB) won't fit a large brain. Supabase Pro at $25/month includes 8GB, which covers most production brains.
+</Info>

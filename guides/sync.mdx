@@ -1,0 +1,117 @@
+---
+title: "Incrementally sync a git markdown repo with GBrain"
+description: "Incremental git-to-brain sync: detect changed files from git diff, import only what changed, handle renames and deletes, and watch for continuous updates."
+---
+
+Sync is the ongoing companion to import. Where `gbrain import` does a full directory scan every time, `gbrain sync` uses `git diff` to detect exactly which files changed since the last run and imports only those. For a brain that receives daily updates, sync is far faster than re-importing the whole directory.
+
+## How sync works
+
+Sync compares two git commits: the last synced commit (stored in `~/.gbrain/config.json`) and the current `HEAD`. It calls `git diff --name-status -M` to get the net result of all changes between those two points — added, modified, deleted, and renamed files. Only `.md` files outside hidden directories are synced.
+
+Renamed files are handled specially: GBrain calls `updateSlug` to preserve the page's `page_id`, chunks, and embeddings, then reimports the content at the new path. Deleted files trigger `deletePage`. Link rewrites happen automatically because slugs track the file path.
+
+## Basic sync
+
+```bash
+gbrain sync --repo ~/git/brain/
+```
+
+The first time you run sync against a repo, GBrain performs a full import to establish a checkpoint. Subsequent runs are incremental.
+
+Output for an incremental sync:
+
+```
+Synced a1b2c3d4..e5f6a7b8:
+  +3 added, ~12 modified, -1 deleted, R2 renamed
+  47 chunks created
+```
+
+## Watch mode
+
+Run sync continuously, polling every 60 seconds:
+
+```bash
+gbrain sync --watch --repo ~/git/brain/
+```
+
+Change the polling interval:
+
+```bash
+gbrain sync --watch --interval 30 --repo ~/git/brain/
+```
+
+Watch mode stops automatically after 5 consecutive sync failures.
+
+## Flags
+
+| Flag | What it does |
+|------|-------------|
+| `--dry-run` | Preview changes without applying them |
+| `--full` | Ignore the last checkpoint and reimport everything |
+| `--no-pull` | Skip `git pull --ff-only` before syncing |
+| `--no-embed` | Import text only, skip embedding generation |
+| `--watch` | Poll for changes continuously |
+| `--interval N` | Polling interval in seconds (default: 60) |
+
+### Dry run preview
+
+```bash
+gbrain sync --repo ~/git/brain/ --dry-run
+# Sync dry run: a1b2c3d4..e5f6a7b8
+#   Added: people/new-contact.md
+#   Modified: companies/acme.md, concepts/compounding.md
+#   Deleted: inbox/old-note.md
+```
+
+### Large syncs
+
+When more than 100 files change, GBrain automatically defers embeddings:
+
+```
+Large sync (143 files). Importing text, deferring embeddings.
+Text imported. Run 'gbrain embed --stale' to generate embeddings.
+```
+
+## Sync state
+
+The last synced commit is stored in your brain's Postgres config table under `sync.last_commit`. GBrain also validates ancestry — if the stored commit is no longer in history (after a force push, for example), it falls back to a full reimport automatically.
+
+```bash
+gbrain config get sync.last_commit   # inspect current checkpoint
+```
+
+## Setting up a cron job
+
+For hands-off continuous sync, add a cron entry:
+
+```bash
+# Run sync every 15 minutes
+*/15 * * * * gbrain sync --repo ~/git/brain/ --no-pull >> ~/.gbrain/sync.log 2>&1
+```
+
+Use `--no-pull` in cron if you manage git pulls separately, to avoid authentication prompts.
+
+## Sync as an MCP tool
+
+When GBrain is running as an MCP server, agents can trigger sync programmatically using the `sync_brain` tool:
+
+```
+sync_brain(repo_path="~/git/brain/", no_embed=false)
+```
+
+This lets an agent sync the brain after writing new pages, ensuring the next search query sees the latest content.
+
+## When to use sync vs import
+
+| Situation | Use |
+|-----------|-----|
+| Initial setup or full re-index | `gbrain import` |
+| Daily ongoing updates | `gbrain sync` |
+| Continuous operation (background process) | `gbrain sync --watch` |
+| After a force push or corrupted checkpoint | `gbrain sync --full` |
+| After writing many pages via MCP | `sync_brain` MCP tool |
+
+<Note>
+  Sync is idempotent. Running it multiple times when the repo hasn't changed returns `Already up to date.` without touching the database.
+</Note>

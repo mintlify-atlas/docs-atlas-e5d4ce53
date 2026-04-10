@@ -1,0 +1,175 @@
+---
+title: "Ingest skill: convert external documents into brain pages"
+description: "How to convert external documents into brain pages with full entity propagation — meeting transcripts, emails, articles, and Apple Notes."
+---
+
+The ingest skill converts external documents into brain pages. Every ingest event — a meeting transcript, an article, an email thread, an Apple Note — produces entity updates across multiple brain pages, cross-reference links between those entities, and timeline entries that trace every fact back to its source. A document is not fully ingested until every entity page has been updated.
+
+## Supported input types
+
+- Meeting transcripts (via Circleback or any diarized transcript source)
+- Emails and email threads
+- Articles and web pages
+- Apple Notes
+- Any text document with named entities
+
+## The ingest workflow
+
+<Steps>
+  <Step title="Parse the source">
+    Extract people, companies, dates, and events from the input. For meetings, identify participants, topics discussed, decisions made, and action items. Pull the full transcript — AI-generated summaries hallucinate framing. The transcript is ground truth.
+  </Step>
+  <Step title="For each entity mentioned">
+    - `gbrain search "name"` — does a page already exist?
+    - **Exists:** read the page, update compiled_truth State section (rewrite, not append), append new facts to timeline
+    - **New:** create a page with `gbrain put <type/slug>`, populate with what the document reveals, add first timeline entry
+  </Step>
+  <Step title="Update compiled truth">
+    The compiled truth is a synthesis that represents the current state of play. Rewrite it — not append to it. If the ingest reveals new information that changes the picture, the State section gets rewritten to reflect the new state. The old version is not lost: it lives in the timeline and in page version history.
+  </Step>
+  <Step title="Append to timeline">
+    Add a timeline entry for each event with date, summary, and source citation. Timeline entries are append-only and reverse-chronological. Never edit existing entries.
+
+    ```markdown
+    - **2026-04-07** | Discussed Series B timeline. Concerned about burn rate.
+      [Source: Meeting notes "Team Sync" #12345, 2026-04-07 2:00 PM PT]
+    ```
+  </Step>
+  <Step title="Create cross-reference links">
+    Link every entity pair that appeared together in the document. Use typed link relationships: `knows`, `works_at`, `invested_in`, `founded`, `met_at`, `discussed`. If Alice met Bob at Acme Corp, the meeting goes on Alice's page, Bob's page, and Acme Corp's page.
+  </Step>
+  <Step title="Log the ingest">
+    Commit changes to the brain repo and sync so pages are immediately searchable:
+
+    ```bash
+    git add brain/ && git commit -m "ingest: team-sync-2026-04-07"
+    gbrain sync --no-pull --no-embed
+    ```
+  </Step>
+</Steps>
+
+## Meeting ingestion
+
+Meetings are the richest signal source in the system. Every meeting produces entity updates across multiple brain pages.
+
+<Note>
+  Step 3 — propagating to entity pages — is the step most agents skip. A meeting is not fully ingested until every entity page has been updated.
+</Note>
+
+### The meeting page
+
+Write to `brain/meetings/YYYY-MM-DD-short-description.md`. Structure:
+
+**Above the line (compiled truth):** The agent's own analysis reframed through the user's priorities. What matters to you, not a generic recap. Flag surprises, contradictions, and implications. Name real decisions and commitments — not performative ones. Call out what was left unsaid or unresolved.
+
+**Below the line (timeline):** Full diarized transcript, append-only. Format: `**Speaker** (HH:MM:SS): Words.`
+
+### Entity propagation (mandatory)
+
+After creating the meeting page, update every entity it mentions:
+
+| Entity type | What to update |
+|-------------|---------------|
+| **People pages** | Update State with new role/context, append Timeline with meeting-specific insights |
+| **Company pages** | Update State with new metrics, status, decisions, and feedback |
+| **Deal pages** | Update State with new terms, status, and deadlines |
+
+### Back-linking
+
+Meeting page links to attendee pages. Attendee pages link back to the meeting with context. The graph is bidirectional. Always.
+
+```markdown
+<!-- On the meeting page -->
+Attendees: [Pedro Franceschi](people/pedro-franceschi.md), [Sarah Chen](people/sarah-chen.md)
+
+<!-- On Pedro's page (back-link) -->
+- **2026-04-07** | Met at Team Sync. Discussed Series B timeline.
+  [Source: Meeting notes "Team Sync" #12345, 2026-04-07 2:00 PM PT]
+```
+
+### Meeting ingestion schedule
+
+Run as a cron job. A reasonable cadence: 3x/day (10 AM, 4 PM, 9 PM) to catch new meetings throughout the day.
+
+```bash
+# Example: Circleback webhook → agent wakes → pulls full transcript → ingests
+gbrain sync --no-pull --no-embed
+```
+
+## Source attribution
+
+Every fact written to a brain page needs an inline `[Source: ...]` citation with full provenance. This is not optional.
+
+```
+[Source: {who}, {channel/context}, {date} {time} {tz}]
+```
+
+<AccordionGroup>
+  <Accordion title="Citation examples by type">
+    **Direct statements:**
+    `[Source: User, direct message, 2026-04-07 12:33 PM PT]`
+
+    **Meetings:**
+    `[Source: Meeting notes "Team Sync" #12345, 2026-04-03 12:11 PM PT]`
+
+    **Emails:**
+    `[Source: email from Sarah Chen re Q2 board deck, 2026-04-05 2:30 PM PT]`
+
+    **API enrichment:**
+    `[Source: Crustdata LinkedIn enrichment, 2026-04-07 12:35 PM PT]`
+
+    **Social media (URL mandatory):**
+    `[Source: X/@pedroh96 tweet, product launch, 2026-04-07](https://x.com/pedroh96/status/...)`
+
+    **Published media:**
+    `[Source: Wall Street Journal, 2026-04-05](https://wsj.com/...)`
+  </Accordion>
+  <Accordion title="Source hierarchy for conflicting information">
+    When sources conflict, note the contradiction in compiled truth with both citations. Don't silently pick one.
+
+    1. User's direct statements (highest authority)
+    2. Primary sources (meetings, emails, direct conversations)
+    3. Enrichment APIs (Crustdata, Happenstance, Captain)
+    4. Web search results
+    5. Social media posts
+  </Accordion>
+</AccordionGroup>
+
+<Warning>
+  Tweet URLs are mandatory. A tweet reference without a URL is a broken citation. This is a real production problem: hundreds of brain pages end up with broken tweet citations when the URL is omitted.
+</Warning>
+
+## The compiled truth rule
+
+The compiled truth pattern:
+
+- **Above the line:** A synthesis of the current state of play. Rewritten when new evidence changes the picture.
+- **Below the line:** Append-only timeline. Never rewritten. Every compiled truth claim is traceable to one or more timeline entries.
+
+```markdown
+## Executive Summary
+One paragraph. How you know them, why they matter.
+
+## State
+Role, company, key numbers, relationship status.
+
+## What They Believe
+Their worldview, first principles, hills they die on.
+
+---
+
+## Timeline
+
+- **2026-04-07** | Met at Team Sync. Discussed new product launch.
+  [Source: Meeting notes "Team Sync" #12345, 2026-04-07 2:00 PM PT]
+- **2026-03-15** | First meeting. Intro from Pedro. Strong technical background.
+  [Source: User, direct message, 2026-03-15 3:00 PM PT]
+```
+
+## Tools used
+
+- `get_page` — read existing entity pages before updating
+- `put_page` — write/update compiled truth
+- `add_timeline_entry` — append new events to entity timelines
+- `add_link` — create typed cross-reference links between entities
+- `get_tags` / `add_tag` — manage page classification

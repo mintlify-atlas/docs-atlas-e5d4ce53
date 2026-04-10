@@ -1,0 +1,106 @@
+---
+title: "GBrain: Postgres-native knowledge brain for AI agents"
+description: "GBrain indexes your markdown files with hybrid search so AI agents can retrieve what you know fast. CLI, MCP server, and TypeScript library included."
+---
+
+GBrain is the retrieval layer between your markdown brain repo and your AI agent. It indexes your files in Postgres with pgvector, gives you hybrid keyword + vector search with RRF fusion, and exposes everything as a CLI, an MCP server with 30 tools, and a TypeScript library. At 500 files, `grep` is fine. At 3,000 people pages, 5,800 Apple Notes, and 13 years of calendar data, you need something else.
+
+## What GBrain is
+
+GBrain is a Postgres-native personal knowledge brain built for people who think for a living. The knowledge model is simple: one markdown file per entity — person, company, concept, meeting, idea. Every page has a compiled truth section (your current best understanding, rewritten when evidence changes) and an append-only timeline (the evidence trail that never gets edited). GBrain chunks those files, embeds them with OpenAI, indexes them in Postgres, and gives your AI agent fast retrieval over all of it.
+
+You don't need Postgres to start. The knowledge model is just markdown files in a git repo. The skills and schema work with any agent that can read and write files. Add Postgres when `grep` stops being enough.
+
+## Why it exists
+
+The creator of GBrain started an OpenClaw agent and a markdown brain repo — one page per person, one page per company. The agent got smarter the more it knew, so he kept feeding it: meetings, emails, tweets, Apple Notes, calendar data, original ideas. Within a week: 10,000+ files indexed, 3,000+ people with compiled dossiers, 13 years of calendar data, 5,800+ Apple Notes going back to 2009.
+
+At that scale, `grep` falls apart. You need keyword search for exact names, vector search for semantic meaning, and something that fuses both. You need an index that updates incrementally when one file changes, not a full directory walk. GBrain solves that.
+
+## How it works
+
+```text
+┌──────────────────┐    ┌───────────────┐    ┌──────────────────┐
+│   Brain Repo     │    │    GBrain     │    │    AI Agent      │
+│   (git)          │    │  (retrieval)  │    │  (read/write)    │
+│                  │    │               │    │                  │
+│  markdown files  │───>│  Postgres +   │<──>│  skills define   │
+│  = source of     │    │  pgvector     │    │  HOW to use the  │
+│    truth         │    │               │    │  brain           │
+│                  │<───│  hybrid       │    │                  │
+│  human can       │    │  search       │    │  entity detect   │
+│  always read     │    │  (vector +    │    │  enrich          │
+│  & edit          │    │   keyword +   │    │  ingest          │
+│                  │    │   RRF)        │    │  brief           │
+└──────────────────┘    └───────────────┘    └──────────────────┘
+```
+
+The Brain Repo is the system of record — plain markdown files in git. GBrain is the retrieval layer. The AI agent reads and writes through both. The human always wins: edit any markdown file directly and `gbrain sync` picks up the changes.
+
+## Three interfaces
+
+GBrain exposes the same 30 operations through three surfaces:
+
+- **CLI** — every operation available as a terminal command. `gbrain query`, `gbrain get`, `gbrain put`, `gbrain sync`, and more. Run `gbrain --help` for the full list.
+- **MCP server** — 30 tools via stdio, generated from the same contract as the CLI. Add GBrain to Claude Code, Cursor, Windsurf, or any other MCP client with a two-line JSON config.
+- **TypeScript library** — import `PostgresEngine` directly and call operations programmatically. The `BrainEngine` interface is pluggable.
+
+## Who it's for
+
+GBrain is designed for AI agents running on OpenClaw or Hermes Agent, but works with any MCP client or TypeScript codebase. It's the recommended knowledge layer for:
+
+- **OpenClaw / Hermes agents** — install as a ClawHub plugin. The agent gets the CLI, MCP tools, and all seven skill files loaded automatically.
+- **Claude Code / Cursor / Windsurf** — add as an MCP server. The agent gets 30 tools; paste the skillpack into your project instructions.
+- **Custom TypeScript agents** — import `PostgresEngine` and call operations directly.
+
+## The compounding thesis
+
+Most tools help you find things. GBrain makes you smarter over time.
+
+Every time the agent reads a page, it has more context to respond with. Every time it writes a page — after a meeting, after ingesting an article, after capturing an original idea — that knowledge is available for every future query. The difference between an agent with this loop and one without it compounds daily.
+
+```text
+Signal arrives (meeting, email, tweet, link)
+  → Agent detects entities (people, companies, ideas)
+  → READ: check the brain first (gbrain search, gbrain get)
+  → Respond with full context
+  → WRITE: update brain pages with new information
+  → Sync: gbrain indexes changes for next query
+```
+
+Never do anything twice. If you look someone up once, that lookup lives in the brain forever. If a pattern emerges across three meetings, the agent captures it. If you generate an original idea in conversation, it goes to `originals/` — your searchable intellectual archive.
+
+## Key features
+
+**Hybrid search with RRF fusion.** Keyword search alone misses conceptual matches. Vector search alone misses exact phrases when the embedding is diluted by surrounding text. GBrain combines both with Reciprocal Rank Fusion, plus multi-query expansion via Claude Haiku to catch phrasings you didn't think of.
+
+**Three chunking strategies.** Recursive chunking (fast, lossless, 300-word chunks with 50-word overlap) for timeline and bulk import. Semantic chunking (Savitzky-Golay boundary detection on sentence embeddings) for compiled truth. LLM-guided chunking (Claude Haiku topic shifts) for high-value content on request.
+
+**Incremental sync.** `gbrain sync` uses git's own diff machinery — it compares HEAD to the last synced commit and processes only what changed. `gbrain sync --watch` polls continuously. No more 30-second directory walks when 3 files changed.
+
+**Idempotent import.** Every file is hashed with SHA-256. Re-importing skips unchanged files. Import is interruptible and resumable via checkpoints.
+
+**Page version control.** Every write to compiled truth creates a snapshot. `gbrain history <slug>` shows the version trail. `gbrain revert <slug> <version-id>` rolls back.
+
+**Graph traversal.** `gbrain graph <slug>` traverses the typed link graph with a recursive CTE (configurable depth, default 5). Typed links include `knows`, `invested_in`, `works_at`, `founded`, `references`.
+
+**Health dashboard.** `gbrain health` shows embed coverage, stale pages (compiled truth older than latest timeline entry), orphan pages, and dead links. `gbrain doctor` runs structural checks against the database.
+
+**30 MCP tools.** `get_page`, `put_page`, `search`, `query`, `add_link`, `traverse_graph`, `sync_brain`, `file_upload`, and 22 more — all generated from the same contract as the CLI, with structural parity tests to verify zero drift.
+
+## Where to go next
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Get GBrain running and your first markdown files indexed in under 90 seconds.
+  </Card>
+  <Card title="Installation" icon="download" href="/installation">
+    Every install path: bun, ClawHub, MCP server, TypeScript library.
+  </Card>
+  <Card title="CLI reference" icon="terminal" href="/reference/commands">
+    Every command, flag, and default value with real examples.
+  </Card>
+  <Card title="Agent skillpack" icon="brain" href="/skillpack/overview">
+    Reference architecture for production agents: the read-write loop, entity detection, enrichment pipeline, cron schedule.
+  </Card>
+</CardGroup>

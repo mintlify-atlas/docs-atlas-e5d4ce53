@@ -1,0 +1,185 @@
+---
+title: "Compiled truth and timeline: the two-layer page pattern"
+description: "The two-layer page structure: rewritable synthesis above the line, append-only evidence below. How agents maintain each layer and when to read which."
+---
+
+The compiled truth + timeline pattern is the structural foundation of every GBrain brain page. It enforces a strict separation between what you currently know about something (the synthesis) and the chain of evidence that produced that knowledge (the proof). The separation is what allows AI agents to maintain the brain reliably: rewriting the synthesis when evidence changes, appending to the timeline when new events occur, and never confusing the two.
+
+## The two layers
+
+Every page is divided by a `---` horizontal rule:
+
+```markdown
+---
+type: person
+title: Jane Smith
+tags: [fintech, yc, s22]
+---
+
+## Compiled truth
+
+Jane is CTO of Acme (Series A, $12M, March 2025). Previously led ML infrastructure
+at Stripe 2019–2023. YC S22 founder. Strong technical depth in distributed systems.
+Open thread: intro request from Pedro — she mentioned interest in advisory work.
+
+**State**
+- Role: CTO, Acme
+- Stage: Series A ($12M, March 2025)
+- Source: crustdata + last meeting 2025-02-15
+
+**Open threads**
+- [ ] Intro request from Pedro pending (since 2025-03-01)
+- [ ] Follow up on distributed systems paper she mentioned
+
+**See also**
+- [Acme](../companies/acme.md) — current company
+- [Pedro Franceschi](./pedro-franceschi.md) — mutual connection, intro pending
+
+---
+
+- 2025-03-01: Coffee meeting. Discussed Acme's infra roadmap. She mentioned interest
+  in advisory work — flagged for Pedro intro (source: calendar/2025-03-01-jane-coffee)
+- 2025-02-15: Met at Fintech Summit. Good conversation about LLM infra (source: calendar/2025-02-15-fintech-summit)
+- 2023-06-01: Joined Acme as CTO post-Stripe (source: linkedin-sync-2023-06-01)
+- 2019-08-01: Joined Stripe ML infra team (source: linkedin-sync-2019-08)
+```
+
+Above the `---` separator is compiled truth. Below it is the timeline. The rule is absolute: nothing below the line gets edited, and the compiled truth always reflects the current picture — not the history.
+
+## Above the line: compiled truth
+
+The compiled truth section contains four structural elements:
+
+<Steps>
+  <Step title="Executive summary">
+    The first paragraph is a plain-prose executive summary written for a reader with zero prior context. It answers "what's the current state of this entity?" in three to five sentences. If an agent reads only one thing, this is it.
+  </Step>
+  <Step title="State fields">
+    Key-value structured data: current role, company, stage, score, last contact, or any field relevant to the entity type. Formatted as a markdown definition list or a short table. These fields are also captured in frontmatter JSONB for structured queries.
+  </Step>
+  <Step title="Open threads">
+    Active items that require follow-up. Formatted as checkboxes with creation dates. When a thread is resolved, it is **removed** from this list — not checked off. The resolution is recorded in the timeline instead.
+  </Step>
+  <Step title="See also">
+    Cross-references to related pages, formatted as relative links with relationship context. These are the human-readable surface of typed links in the `links` table.
+  </Step>
+</Steps>
+
+<Note>
+  The compiled truth section must always be rewritten as a coherent whole — not appended to. If a meeting reveals that Jane changed roles, the agent rewrites the executive summary and updates the State fields. It never adds a paragraph saying "as of March 2025, Jane is now at Acme." That kind of hedged language belongs in the timeline.
+</Note>
+
+## Below the line: timeline
+
+The timeline is an append-only, reverse-chronological log. Each entry records a date, a summary of what happened or was learned, and a source citation that points back to the original document.
+
+```markdown
+- 2025-03-01: Coffee meeting. Discussed Acme's infra roadmap (source: calendar/2025-03-01-jane-coffee)
+- 2024-11-15: Referenced in batch W25 kickoff talk (source: media/w25-kickoff)
+- 2023-06-01: Joined Acme as CTO post-Stripe (source: linkedin-sync-2023-06-01)
+```
+
+The timeline is **never edited**. New entries are appended at the top (reverse-chronological). Old entries are not modified, even if they turn out to be wrong — a correction appends a new entry that supersedes the old one, rather than silently overwriting it.
+
+This append-only invariant is what makes the timeline trustworthy as an audit trail. Every fact in the brain is traceable to a source, and that traceability never gets retroactively destroyed by a page rewrite.
+
+## How agents maintain the pattern
+
+When an agent ingests new information — a meeting transcript, an email, a news article — it follows a two-step update protocol:
+
+<CardGroup cols={2}>
+  <Card title="Rewrite compiled truth" icon="pen">
+    Incorporate the new information into the executive summary. Update State fields to reflect current reality. Resolve any open threads that the new information closes (removing them from compiled truth and recording their resolution in the timeline).
+  </Card>
+  <Card title="Append to timeline" icon="plus">
+    Add a new entry at the top of the timeline with today's date, a summary of what happened, and a citation that points to the source document. Never modify existing entries.
+  </Card>
+</CardGroup>
+
+The intelligence assessment analogy is useful here: compiled truth is the "key judgments" section at the top of an intelligence assessment — the current, authoritative synthesis. The timeline is the "source notes" section at the bottom — the dated evidence that supports the synthesis. A good analyst rewrites the key judgments when new evidence changes the picture. They never delete the source notes.
+
+## When agents read each layer
+
+The two layers answer different questions:
+
+| Question | Read |
+|----------|------|
+| "What's the current state?" | Compiled truth — the executive summary |
+| "What changed recently?" | Timeline — most recent entries |
+| "What happened in 2024?" | Timeline — filter by date |
+| "What are the open threads?" | Compiled truth — Open threads section |
+| "How did we get here?" | Timeline — full history |
+| "Who else is connected?" | Compiled truth — See also |
+
+In practice, an agent asked to prep for a meeting reads the compiled truth first (current state, open threads, cross-references), then scans the last 3-5 timeline entries (recent activity). It rarely needs the full timeline unless it's answering a specific historical question.
+
+## Page versioning
+
+Every time a page's compiled truth is rewritten, GBrain stores a snapshot in the `page_versions` table:
+
+```sql
+page_versions
+  page_id       FK to pages
+  compiled_truth  The compiled truth at snapshot time
+  frontmatter     Frontmatter JSONB at snapshot time
+  snapshot_at     Timestamp
+```
+
+This allows the agent to diff compiled truth across time (`gbrain history <slug>`) and revert to a previous version if a rewrite went wrong (`gbrain revert <slug> <version-id>`). The timeline itself is never versioned because it's append-only — every timeline entry is permanent by design.
+
+## Stale detection
+
+GBrain flags a page as stale when the latest timeline entry's date is newer than the `updated_at` timestamp of the compiled truth. This indicates that new evidence has been recorded in the timeline but the synthesis hasn't been rewritten to incorporate it.
+
+Stale pages are surfaced in `gbrain health` output and returned with a stale flag in hybrid search results. The maintain skill includes a periodic sweep that finds all stale pages and schedules compiled truth rewrites.
+
+## How this differs from notes, wikis, and RAG
+
+<AccordionGroup>
+  <Accordion title="vs. a notes app (Obsidian, Notion, Bear)">
+    Notes apps store raw content. There's no structural enforcement of synthesis vs. evidence. Over time, notes accumulate without a mechanism that keeps the "current state" current. GBrain's compiled truth is maintained by an agent — it's always current because rewriting it is automatic, not optional.
+  </Accordion>
+  <Accordion title="vs. a wiki (Confluence, Notion databases)">
+    Wikis rely on humans to keep pages updated. The GBrain pattern is designed for agent maintenance: the agent has a clear, mechanical rule for where to write new information (timeline) and when to trigger a rewrite (whenever the timeline advances). Wikis have no equivalent invariant.
+  </Accordion>
+  <Accordion title="vs. plain RAG (vector search over raw documents)">
+    Plain RAG re-derives answers from raw chunks on every query. GBrain pre-computes the synthesis: the compiled truth section is already the synthesized answer, written by the agent the last time new evidence arrived. Queries hit pre-computed summaries, not raw evidence. The synthesis work is done once, not re-done on every request.
+  </Accordion>
+</AccordionGroup>
+
+## Creating a well-formed page
+
+To write a new page that follows the pattern:
+
+```markdown
+---
+type: company
+title: Acme
+tags: [fintech, series-a]
+stage: series-a
+founded: 2022
+---
+
+Acme builds infrastructure tooling for fintech compliance teams. Series A ($12M)
+closed March 2025 led by Sequoia. Team of 18, primarily ex-Stripe and ex-Plaid.
+Product is a compliance automation platform targeting mid-market banks.
+
+**State**
+- Stage: Series A ($12M, March 2025)
+- Team: 18 employees
+- Lead investor: Sequoia
+
+**Open threads**
+- [ ] Intro to Jane Smith re: advisory interest (2025-03-01)
+
+**See also**
+- [Jane Smith](../people/jane-smith.md) — CTO
+- [Pedro Franceschi](../people/pedro-franceschi.md) — investor connection
+
+---
+
+- 2025-03-01: Series A announced ($12M, Sequoia) (source: techcrunch.com/2025-03-01-acme)
+- 2022-09-01: Company founded by Jane Smith and co-founder (source: crunchbase-sync-2022-09)
+```
+
+The frontmatter defines the type and queryable fields. The compiled truth opens with the executive summary. The horizontal rule separates synthesis from evidence. The timeline entries each have a date and a source citation.

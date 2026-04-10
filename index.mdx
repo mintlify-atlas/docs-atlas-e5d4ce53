@@ -1,97 +1,76 @@
 ---
-title: "Introduction"
-description: "Welcome to the new home for your documentation"
+title: "GBrain: Postgres-powered knowledge brain for AI agents"
+description: "GBrain is a Postgres-native knowledge brain with hybrid search. Index your markdown files and give AI agents fast retrieval across everything you know."
 ---
 
-## Setting up
+GBrain turns your markdown files into a searchable knowledge base backed by Postgres and pgvector. It combines keyword and vector search with RRF fusion to give AI agents fast, accurate retrieval — exposed as a CLI, an MCP server with 30 tools, and a TypeScript library.
 
-Get your documentation site up and running in minutes.
-
-<Card
-  title="Start here"
-  icon="rocket"
-  href="/quickstart"
-  horizontal
->
-  Follow our three step quickstart guide.
-</Card>
-
-## Make it yours
-
-Design a docs site that looks great and empowers your users.
-
-<Columns cols={2}>
-  <Card
-    title="Edit locally"
-    icon="pen-to-square"
-    href="/development"
-  >
-    Edit your docs locally and preview them in real time.
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Get GBrain running and your first markdown files indexed in under 90 seconds.
   </Card>
-  <Card
-    title="Customize your site"
-    icon="palette"
-    href="/essentials/settings"
-  >
-    Customize the design and colors of your site to match your brand.
+  <Card title="Installation" icon="download" href="/installation">
+    Install via bun, as a ClawHub plugin, or as a compiled binary.
   </Card>
-    <Card
-    title="Set up navigation"
-    icon="map"
-    href="/essentials/navigation"
-  >
-    Organize your docs to help users find what they need and succeed with your product.
+  <Card title="CLI Reference" icon="terminal" href="/reference/commands">
+    Every command, flag, and default value documented with real examples.
   </Card>
-  <Card
-    title="API documentation"
-    icon="terminal"
-    href="/api-reference/introduction"
-  >
-    Auto-generate API documentation from OpenAPI specifications.
+  <Card title="MCP Tools" icon="plug" href="/reference/mcp-tools">
+    30 MCP tools for Claude Code, Cursor, Windsurf, and other MCP clients.
   </Card>
-</Columns>
+</CardGroup>
 
-## Create beautiful pages
+## How it works
 
-Everything you need to create world-class documentation.
+GBrain is a thin retrieval layer that sits between your markdown brain repo and your AI agent. You keep writing markdown files — GBrain makes them searchable.
 
-<Columns cols={2}>
-  <Card
-    title="Write with MDX"
-    icon="pen-fancy"
-    href="/essentials/markdown"
-  >
-    Use MDX to style your docs pages.
-  </Card>
-  <Card
-    title="Code samples"
-    icon="code"
-    href="/essentials/code"
-  >
-    Add sample code to demonstrate how to use your product.
-  </Card>
-  <Card
-    title="Images"
-    icon="image"
-    href="/essentials/images"
-  >
-    Display images and other media.
-  </Card>
-  <Card
-    title="Reusable snippets"
-    icon="recycle"
-    href="/essentials/reusable-snippets"
-  >
-    Write once and reuse across your docs.
-  </Card>
-</Columns>
+<Steps>
+  <Step title="Import your markdown">
+    Point GBrain at any directory of markdown files. It chunks, embeds, and indexes everything — idempotently, using SHA-256 content hashing to skip unchanged files.
+    ```bash
+    gbrain import ~/git/brain/
+    ```
+  </Step>
+  <Step title="Search with your agent">
+    Your AI agent calls `gbrain query` or the MCP `query` tool. GBrain runs hybrid search — keyword + vector + multi-query expansion — and returns ranked results with stale-page alerts.
+    ```bash
+    gbrain query "what do we know about competitive dynamics?"
+    ```
+  </Step>
+  <Step title="Keep the brain alive">
+    `gbrain sync --watch` polls your git repo and imports only what changed. The agent enriches pages after meetings, ingests transcripts, and adds timeline entries. The brain compounds over time.
+    ```bash
+    gbrain sync --watch --repo ~/git/brain/
+    ```
+  </Step>
+</Steps>
 
-## Need inspiration?
+## Core concepts
 
-<Card
-  title="See complete examples"
-  icon="stars"
-  href="https://mintlify.com/customers"
->
-  Browse our showcase of exceptional documentation sites.
-</Card>
+<CardGroup cols={2}>
+  <Card title="Knowledge model" icon="book" href="/concepts/knowledge-model">
+    The compiled truth + timeline pattern: rewritable synthesis above the line, append-only evidence below.
+  </Card>
+  <Card title="Brain-agent loop" icon="arrows-rotate" href="/concepts/brain-agent-loop">
+    The read-write cycle that makes your knowledge compound with every conversation.
+  </Card>
+  <Card title="Hybrid search" icon="magnifying-glass" href="/concepts/hybrid-search">
+    Vector + keyword + RRF fusion with multi-query expansion and 4-layer deduplication.
+  </Card>
+  <Card title="Compiled truth" icon="layer-group" href="/concepts/compiled-truth">
+    How the two-layer page structure separates current state from historical evidence.
+  </Card>
+</CardGroup>
+
+## Use with OpenClaw or any agent
+
+GBrain works with any AI agent. Install as an OpenClaw/Hermes plugin, configure as an MCP server in Claude Code or Cursor, or call it directly from TypeScript.
+
+<CardGroup cols={2}>
+  <Card title="Agent Skillpack" icon="brain" href="/skillpack/overview">
+    Reference architecture for production agents: entity detection, enrichment pipeline, cron schedule.
+  </Card>
+  <Card title="Skills" icon="wand-magic-sparkles" href="/guides/skills">
+    Fat markdown skill files that tell agents when and how to use each GBrain operation.
+  </Card>
+</CardGroup>
